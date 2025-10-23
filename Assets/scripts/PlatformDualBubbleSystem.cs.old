@@ -1,0 +1,362 @@
+// --- REVOLUTIONARY: PlatformDualBubbleSystem.cs ---
+// Creates a "stationary local world" bubble system for seamless platform interaction
+using UnityEngine;
+
+public class PlatformDualBubbleSystem : MonoBehaviour
+{
+    [Header("🌍 MANUAL TRIGGER ASSIGNMENT")]
+    [SerializeField] private Collider outerTrigger;  // Coupling/Freeze zone trigger
+    [SerializeField] private Collider innerTrigger;  // Stationary zone trigger
+    
+    [Header("🎯 Platform Reference")]
+    public Transform platformTransform;
+    
+    [Header("🔧 Debug Visualization")]
+    [SerializeField] private bool showDebugInfo = true;
+    [SerializeField] private Color outerBubbleColor = new Color(1f, 0.5f, 0f, 0.3f); // Orange
+    [SerializeField] private Color innerBubbleColor = new Color(0f, 1f, 0f, 0.3f);   // Green
+    
+    // Zone state tracking
+    private bool playerInOuterBubble = false;
+    private bool playerInInnerBubble = false;
+    private PlayerMovementManager playerManager;
+    
+    // Platform motion data for coupling
+    private Vector3 lastPlatformPosition;
+    private Quaternion lastPlatformRotation;
+    private Vector3 platformVelocity;
+    
+    void Awake()
+    {
+        // Validate manual trigger assignments
+        if (outerTrigger == null)
+        {
+            Debug.LogError($"❌ PlatformDualBubbleSystem on '{name}' needs an OUTER TRIGGER assigned!", this);
+            enabled = false;
+            return;
+        }
+        
+        if (innerTrigger == null)
+        {
+            Debug.LogError($"❌ PlatformDualBubbleSystem on '{name}' needs an INNER TRIGGER assigned!", this);
+            enabled = false;
+            return;
+        }
+        
+        // Ensure triggers are properly configured
+        if (!outerTrigger.isTrigger)
+        {
+            Debug.LogWarning($"⚠️ Outer trigger '{outerTrigger.name}' should be marked as Trigger!", this);
+            outerTrigger.isTrigger = true;
+        }
+        
+        if (!innerTrigger.isTrigger)
+        {
+            Debug.LogWarning($"⚠️ Inner trigger '{innerTrigger.name}' should be marked as Trigger!", this);
+            innerTrigger.isTrigger = true;
+        }
+        
+        // Setup trigger event handlers
+        SetupTriggerHandlers();
+        
+        // Find platform transform if not assigned
+        if (platformTransform == null)
+        {
+            // Try to find the actual platform by looking for a CelestialPlatform component
+            CelestialPlatform celestialPlatform = GetComponentInParent<CelestialPlatform>();
+            if (celestialPlatform != null)
+            {
+                platformTransform = celestialPlatform.transform;
+                Debug.Log($"🎯 Auto-detected platform: {platformTransform.name}");
+            }
+            else
+            {
+                // Fallback: Look for any parent with "Platform" in the name
+                Transform current = transform.parent;
+                while (current != null)
+                {
+                    if (current.name.ToLower().Contains("platform") && 
+                        !current.name.ToLower().Contains("manager") &&
+                        !current.name.ToLower().Contains("universe"))
+                    {
+                        platformTransform = current;
+                        Debug.Log($"🎯 Found platform by name: {platformTransform.name}");
+                        break;
+                    }
+                    current = current.parent;
+                }
+                
+                // Last resort: use immediate parent only if it's not a manager
+                if (platformTransform == null && transform.parent != null)
+                {
+                    if (!transform.parent.name.ToLower().Contains("manager") &&
+                        !transform.parent.name.ToLower().Contains("universe"))
+                    {
+                        platformTransform = transform.parent;
+                        Debug.LogWarning($"⚠️ Using immediate parent as platform: {platformTransform.name}");
+                    }
+                }
+            }
+        }
+        
+        if (platformTransform == null)
+        {
+            Debug.LogError($"❌ PlatformDualBubbleSystem on '{name}' needs a platform transform!", this);
+            enabled = false;
+            return;
+        }
+        
+        // Initialize platform tracking
+        lastPlatformPosition = platformTransform.position;
+        lastPlatformRotation = platformTransform.rotation;
+        
+        Debug.Log($"🚀 MANUAL DUAL BUBBLE SYSTEM INITIALIZED for {platformTransform.name}");
+        Debug.Log($"   🔶 Outer Trigger: {outerTrigger.name} | 🔷 Inner Trigger: {innerTrigger.name}");
+    }
+    
+    void SetupTriggerHandlers()
+    {
+        // Add trigger event components if they don't exist
+        var outerHandler = outerTrigger.GetComponent<TriggerEventHandler>();
+        if (outerHandler == null)
+        {
+            outerHandler = outerTrigger.gameObject.AddComponent<TriggerEventHandler>();
+        }
+        outerHandler.SetBubbleSystem(this, true); // true = outer trigger
+        
+        var innerHandler = innerTrigger.GetComponent<TriggerEventHandler>();
+        if (innerHandler == null)
+        {
+            innerHandler = innerTrigger.gameObject.AddComponent<TriggerEventHandler>();
+        }
+        innerHandler.SetBubbleSystem(this, false); // false = inner trigger
+    }
+    
+    void Update()
+    {
+        // Track platform motion for coupling
+        TrackPlatformMotion();
+        
+        // Handle player zone logic if player is present
+        if (playerManager != null)
+        {
+            HandlePlayerZoneLogic();
+        }
+    }
+    
+    void TrackPlatformMotion()
+    {
+        // Calculate platform velocity for coupling
+        Vector3 currentPosition = platformTransform.position;
+        platformVelocity = (currentPosition - lastPlatformPosition) / Time.deltaTime;
+        
+        lastPlatformPosition = currentPosition;
+        lastPlatformRotation = platformTransform.rotation;
+    }
+    
+    void HandlePlayerZoneLogic()
+    {
+        // This method is now primarily for debug visualization
+        // Actual zone logic is handled by trigger events
+        if (playerManager == null) return;
+        
+        // Update debug visualization based on current states
+        if (showDebugInfo)
+        {
+            string status = "";
+            if (playerInInnerBubble) status = "🛡️ STATIONARY ZONE";
+            else if (playerInOuterBubble) status = "🌍 COUPLING ZONE";
+            else status = "🚀 FREE SPACE";
+            
+            Debug.Log($"🔍 {platformTransform.name} Status: {status}");
+        }
+    }
+    
+    #region MANUAL TRIGGER EVENT HANDLERS
+    
+    public void OnPlayerEnterOuterTrigger(PlayerMovementManager player)
+    {
+        if (playerManager == null)
+        {
+            playerManager = player;
+            Debug.Log($"🎯 PLAYER DETECTED in {platformTransform.name} bubble system");
+        }
+        
+        if (!playerInOuterBubble)
+        {
+            playerInOuterBubble = true;
+            OnPlayerEnterOuterBubble();
+        }
+    }
+    
+    public void OnPlayerExitOuterTrigger(PlayerMovementManager player)
+    {
+        if (playerManager == player && playerInOuterBubble)
+        {
+            playerInOuterBubble = false;
+            OnPlayerExitOuterBubble();
+            
+            // If player exits outer trigger, they're definitely out of inner too
+            if (playerInInnerBubble)
+            {
+                playerInInnerBubble = false;
+                OnPlayerExitInnerBubble();
+            }
+            
+            // Clean up player reference when completely outside
+            Debug.Log($"👋 PLAYER LEFT {platformTransform.name} bubble system completely");
+            playerManager = null;
+        }
+    }
+    
+    public void OnPlayerEnterInnerTrigger(PlayerMovementManager player)
+    {
+        if (playerManager == player && !playerInInnerBubble)
+        {
+            playerInInnerBubble = true;
+            OnPlayerEnterInnerBubble();
+        }
+    }
+    
+    public void OnPlayerExitInnerTrigger(PlayerMovementManager player)
+    {
+        if (playerManager == player && playerInInnerBubble)
+        {
+            playerInInnerBubble = false;
+            OnPlayerExitInnerBubble();
+        }
+    }
+    
+    #endregion
+    
+    #region BUBBLE ZONE EVENTS
+    
+    void OnPlayerEnterOuterBubble()
+    {
+        Debug.Log($"🌍 PLAYER ENTERED OUTER BUBBLE of {platformTransform.name}");
+        
+        // Enable platform coupling
+        if (playerManager != null)
+        {
+            playerManager.OnEnterPlatformCouplingZone(this);
+        }
+    }
+    
+    void OnPlayerExitOuterBubble()
+    {
+        Debug.Log($"🚀 PLAYER EXITED OUTER BUBBLE of {platformTransform.name} - DECOUPLING!");
+        
+        // Disable platform coupling and clean separation
+        if (playerManager != null)
+        {
+            playerManager.OnExitPlatformCouplingZone(this);
+        }
+    }
+    
+    void OnPlayerEnterInnerBubble()
+    {
+        Debug.Log($"🛡️ PLAYER ENTERED INNER STATIONARY BUBBLE of {platformTransform.name}");
+        Debug.Log($"✨ MAGIC ZONE ACTIVATED: Platform appears stationary!");
+        
+        // Enter "stationary local world" mode
+        if (playerManager != null)
+        {
+            playerManager.OnEnterStationaryZone(this);
+        }
+    }
+    
+    void OnPlayerExitInnerBubble()
+    {
+        Debug.Log($"🌊 PLAYER EXITED INNER BUBBLE of {platformTransform.name}");
+        Debug.Log($"🔄 COUPLING MODE: Platform motion visible again");
+        
+        // Exit "stationary local world" mode
+        if (playerManager != null)
+        {
+            playerManager.OnExitStationaryZone(this);
+        }
+    }
+    
+    #endregion
+    
+    #region PUBLIC INTERFACE FOR PLAYER MANAGER
+    
+    public Vector3 GetPlatformVelocity()
+    {
+        return platformVelocity;
+    }
+    
+    public Transform GetPlatformTransform()
+    {
+        return platformTransform;
+    }
+    
+    public bool IsPlayerInStationaryZone()
+    {
+        return playerInInnerBubble;
+    }
+    
+    public bool IsPlayerInCouplingZone()
+    {
+        return playerInOuterBubble;
+    }
+    
+    #endregion
+    
+    #region DEBUG VISUALIZATION
+    
+    void OnDrawGizmos()
+    {
+        if (!showDebugInfo) return;
+        if (outerTrigger == null || innerTrigger == null) return;
+        
+        // Draw outer trigger bounds (coupling zone)
+        Gizmos.color = outerBubbleColor;
+        Gizmos.matrix = outerTrigger.transform.localToWorldMatrix;
+        Gizmos.DrawCube(Vector3.zero, Vector3.one);
+        
+        // Draw inner trigger bounds (stationary zone)  
+        Gizmos.color = innerBubbleColor;
+        Gizmos.matrix = innerTrigger.transform.localToWorldMatrix;
+        Gizmos.DrawCube(Vector3.zero, Vector3.one);
+        
+        // Reset matrix
+        Gizmos.matrix = Matrix4x4.identity;
+        
+        // Draw labels
+        if (Application.isPlaying && playerManager != null)
+        {
+            Vector3 labelPos = transform.position + Vector3.up * (outerTrigger.bounds.size.y + 2f);
+            
+            string status = "";
+            if (playerInInnerBubble) status = "🛡️ STATIONARY ZONE";
+            else if (playerInOuterBubble) status = "🌍 COUPLING ZONE";
+            else status = "🚀 FREE SPACE";
+            
+            #if UNITY_EDITOR
+            UnityEditor.Handles.Label(labelPos, status);
+            #endif
+        }
+    }
+    
+    void OnDrawGizmosSelected()
+    {
+        if (outerTrigger == null || innerTrigger == null) return;
+        
+        // More detailed visualization when selected
+        Gizmos.color = Color.white;
+        
+        // Draw outer trigger wireframe
+        Gizmos.matrix = outerTrigger.transform.localToWorldMatrix;
+        Gizmos.DrawWireCube(Vector3.zero, Vector3.one);
+        
+        // Draw inner trigger wireframe
+        Gizmos.matrix = innerTrigger.transform.localToWorldMatrix;
+        Gizmos.DrawWireCube(Vector3.zero, Vector3.one);
+        
+        // Reset matrix
+        Gizmos.matrix = Matrix4x4.identity;
+    }
+    
+    #endregion
+}

@@ -1,0 +1,63 @@
+// --- TriggerEventHandler.cs ---
+// Handles trigger events for manual bubble system triggers
+using UnityEngine;
+
+public class TriggerEventHandler : MonoBehaviour
+{
+    private PlatformDualBubbleSystem bubbleSystem;
+    private bool isOuterTrigger; // true = outer, false = inner
+    
+    public void SetBubbleSystem(PlatformDualBubbleSystem system, bool outer)
+    {
+        bubbleSystem = system;
+        isOuterTrigger = outer;
+        
+        string triggerType = isOuterTrigger ? "OUTER (Coupling)" : "INNER (Stationary)";
+        Debug.Log($"🔧 TriggerEventHandler setup: {name} → {triggerType} trigger");
+    }
+    
+    void OnTriggerEnter(Collider other)
+    {
+        if (other.CompareTag("Player") && bubbleSystem != null)
+        {
+            var playerManager = other.GetComponent<PlayerMovementManager>();
+            if (playerManager == null)
+            {
+                Debug.LogWarning($"⚠️ Player entered trigger but no PlayerMovementManager found!");
+                return;
+            }
+            
+            if (isOuterTrigger)
+            {
+                Debug.Log($"🔶 PLAYER ENTERED OUTER TRIGGER: {name}");
+                bubbleSystem.OnPlayerEnterOuterTrigger(playerManager);
+            }
+            else
+            {
+                Debug.Log($"🔷 PLAYER ENTERED INNER TRIGGER: {name}");
+                bubbleSystem.OnPlayerEnterInnerTrigger(playerManager);
+            }
+        }
+    }
+    
+    void OnTriggerExit(Collider other)
+    {
+        if (other.CompareTag("Player") && bubbleSystem != null)
+        {
+            var playerManager = other.GetComponent<PlayerMovementManager>();
+            if (playerManager != null)
+            {
+                if (isOuterTrigger)
+                {
+                    Debug.Log($"🔶 PLAYER EXITED OUTER TRIGGER: {name}");
+                    bubbleSystem.OnPlayerExitOuterTrigger(playerManager);
+                }
+                else
+                {
+                    Debug.Log($"🔷 PLAYER EXITED INNER TRIGGER: {name}");
+                    bubbleSystem.OnPlayerExitInnerTrigger(playerManager);
+                }
+            }
+        }
+    }
+}

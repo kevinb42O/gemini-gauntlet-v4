@@ -1,0 +1,125 @@
+// --- HELPER: PlatformBubbleSetup.cs ---
+// Automatically adds dual bubble systems to all platforms in the scene
+using UnityEngine;
+
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
+
+public class PlatformBubbleSetup : MonoBehaviour
+{
+    [Header("🚀 AUTOMATIC BUBBLE SYSTEM SETUP")]
+    [SerializeField] private float defaultOuterRadius = 15f;
+    [SerializeField] private float defaultInnerRadius = 8f;
+    [SerializeField] private bool setupOnStart = true;
+    
+    [Header("🔍 Debug")]
+    [SerializeField] private bool showDebugInfo = true;
+    
+    void Start()
+    {
+        if (setupOnStart)
+        {
+            SetupAllPlatformBubbles();
+        }
+    }
+    
+    [ContextMenu("Setup All Platform Bubbles")]
+    public void SetupAllPlatformBubbles()
+    {
+        Debug.Log("🚀 SETTING UP DUAL BUBBLE SYSTEMS FOR ALL PLATFORMS...");
+        
+        // Find all CelestialPlatform objects in the scene
+        CelestialPlatform[] platforms = FindObjectsByType<CelestialPlatform>(FindObjectsSortMode.None);
+        
+        int setupCount = 0;
+        
+        foreach (var platform in platforms)
+        {
+            if (SetupBubbleSystemForPlatform(platform))
+            {
+                setupCount++;
+            }
+        }
+        
+        Debug.Log($"✅ BUBBLE SETUP COMPLETE: {setupCount}/{platforms.Length} platforms configured!");
+    }
+    
+    private bool SetupBubbleSystemForPlatform(CelestialPlatform platform)
+    {
+        // Check if platform already has a bubble system
+        PlatformDualBubbleSystem existingBubble = platform.GetComponentInChildren<PlatformDualBubbleSystem>();
+        if (existingBubble != null)
+        {
+            if (showDebugInfo)
+                Debug.Log($"⚠️ Platform {platform.name} already has bubble system - skipping");
+            return false;
+        }
+        
+        // Create bubble system GameObject
+        GameObject bubbleSystemObj = new GameObject($"{platform.name}_DualBubbleSystem");
+        bubbleSystemObj.transform.SetParent(platform.transform);
+        bubbleSystemObj.transform.localPosition = Vector3.zero;
+        
+        // Add the bubble system component
+        PlatformDualBubbleSystem bubbleSystem = bubbleSystemObj.AddComponent<PlatformDualBubbleSystem>();
+        
+        // Configure bubble system through reflection (since fields are private)
+        var outerRadiusField = typeof(PlatformDualBubbleSystem).GetField("outerBubbleRadius", 
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        var innerRadiusField = typeof(PlatformDualBubbleSystem).GetField("innerBubbleRadius", 
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+        
+        if (outerRadiusField != null) outerRadiusField.SetValue(bubbleSystem, defaultOuterRadius);
+        if (innerRadiusField != null) innerRadiusField.SetValue(bubbleSystem, defaultInnerRadius);
+        
+        // Set platform reference
+        bubbleSystem.platformTransform = platform.transform;
+        
+        // Setup collider with proper layer
+        SphereCollider bubbleCollider = bubbleSystemObj.GetComponent<SphereCollider>();
+        if (bubbleCollider != null)
+        {
+            bubbleCollider.isTrigger = true;
+            bubbleCollider.radius = defaultOuterRadius;
+        }
+        
+        // Old gravity zone removal code has been removed as part of gravity zone system deprecation
+        
+        if (showDebugInfo)
+        {
+            Debug.Log($"🎯 BUBBLE SYSTEM ADDED to {platform.name}:");
+            Debug.Log($"   📏 Outer radius: {defaultOuterRadius}m (Coupling Zone)");
+            Debug.Log($"   📏 Inner radius: {defaultInnerRadius}m (Stationary Zone)");
+        }
+        
+        return true;
+    }
+    
+    #if UNITY_EDITOR
+    [ContextMenu("Remove All Bubble Systems")]
+    public void RemoveAllBubbleSystems()
+    {
+        PlatformDualBubbleSystem[] bubbleSystems = FindObjectsByType<PlatformDualBubbleSystem>(FindObjectsSortMode.None);
+        
+        foreach (var bubble in bubbleSystems)
+        {
+            if (Application.isPlaying)
+                Destroy(bubble.gameObject);
+            else
+                DestroyImmediate(bubble.gameObject);
+        }
+        
+        Debug.Log($"🗑️ REMOVED {bubbleSystems.Length} bubble systems from scene");
+    }
+    
+    [MenuItem("GameObject/Platform Tools/Setup Bubble Systems", false, 10)]
+    static void CreateBubbleSetupTool()
+    {
+        GameObject setupTool = new GameObject("PlatformBubbleSetup");
+        setupTool.AddComponent<PlatformBubbleSetup>();
+        
+        Debug.Log("🚀 Platform Bubble Setup tool created! Check the inspector and run 'Setup All Platform Bubbles'");
+    }
+    #endif
+}

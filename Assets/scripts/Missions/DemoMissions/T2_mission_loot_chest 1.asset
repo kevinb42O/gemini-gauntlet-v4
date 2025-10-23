@@ -1,0 +1,28 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: cc10c3d41b0da0646b289b9d9ed08900, type: 3}
+  m_Name: T2_mission_loot_chest 1
+  m_EditorClassIdentifier: 
+  missionID: T2mission_loot_chest
+  missionName: Treasure Hunter
+  missionDescription: Find and loot 10 chests to claim its treasures.
+  missionIcon: {fileID: 348226940, guid: 6ee1035ec348f654982bab0b32a94ae7, type: 3}
+  missionType: 2
+  tier: 2
+  targetCount: 10
+  targetSpecifier: 
+  persistProgressOnDeath: 1
+  xpReward: 1000
+  gemReward: 25
+  itemRewards: []
+  progressTemplate: 'Looted: {current}/{target} chests'
+  completionText: Mission Complete! Return to menu to claim rewards.

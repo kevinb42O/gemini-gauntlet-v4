@@ -1,0 +1,71 @@
+# ESSENTIAL CODEBASE ONLY - Exclude everything except critical development files
+
+# === EXCLUDE EVERYTHING FIRST ===
+*
+*/
+
+# === THEN INCLUDE ONLY ESSENTIAL FILES ===
+
+# Include C# scripts and their meta files
+!**/*.cs
+!**/*.cs.meta
+
+# Include documentation
+!**/*.md
+!**/*.txt
+
+# Include project configuration
+!ProjectSettings/
+!ProjectSettings/**
+
+# Include package configuration
+!Packages/
+!Packages/manifest.json
+!Packages/packages-lock.json
+
+# Include GitHub configuration
+!.github/
+!.github/**
+
+# Include Git files
+!.gitignore
+!.gitattributes
+
+# Include VS Code configuration
+!.vsconfig
+
+# Include JSON configuration files
+!**/*.json
+
+# Include specific script directories
+!Assets/
+!Assets/scripts/
+!Assets/scripts/**
+
+# === UNITY STANDARD EXCLUSIONS ===
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]ser[Ss]ettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+
+# === IDE FILES ===
+.vs/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db

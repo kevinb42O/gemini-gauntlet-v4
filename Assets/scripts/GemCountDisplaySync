@@ -1,0 +1,45 @@
+using UnityEngine;
+using TMPro;
+
+public class GemCountDisplaySync : MonoBehaviour
+{
+    public enum Source { Carried, Secured }
+    public Source source = Source.Carried;            // choose in Inspector
+    public TextMeshProUGUI countText;                 // assign in Inspector
+
+    void OnEnable()
+    {
+        if (countText == null) countText = GetComponentInChildren<TextMeshProUGUI>();
+
+        // prime the display
+        UpdateCount(
+            source == Source.Carried
+                ? PlayerProgression.Instance.currentSpendableGems
+                : PlayerProgression.Instance.securedGems);
+
+        // subscribe
+        PlayerProgression.OnSpendableGemsChanged += OnCarriedChanged;
+        PlayerProgression.OnSecuredGemsChanged   += OnSecuredChanged;
+    }
+
+    void OnDisable()
+    {
+        PlayerProgression.OnSpendableGemsChanged -= OnCarriedChanged;
+        PlayerProgression.OnSecuredGemsChanged   -= OnSecuredChanged;
+    }
+
+    void OnCarriedChanged(int value)
+    {
+        if (source == Source.Carried) UpdateCount(value);
+    }
+
+    void OnSecuredChanged(int value)
+    {
+        if (source == Source.Secured) UpdateCount(value);
+    }
+
+    void UpdateCount(int value)
+    {
+        if (countText != null) countText.text = value.ToString();
+    }
+}

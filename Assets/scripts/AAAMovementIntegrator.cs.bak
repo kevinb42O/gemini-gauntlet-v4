@@ -1,0 +1,474 @@
+using UnityEngine;
+
+/// <summary>
+/// AAA aaaMovement System Integrator - Automatically sets up and configures all AAA movement components
+/// This script handles the integration between your existing systems and the new AAA movement system
+/// </summary>
+public class AAAaaaMovementIntegrator : MonoBehaviour
+{
+    [Header("=== INTEGRATION SETTINGS ===")]
+    [SerializeField] private bool useAAAaaaMovement = false;
+    [SerializeField] private bool replaceExistingaaaMovement = true;
+    [SerializeField] private bool enableDebugMode = true;
+    
+    [Header("=== COMPONENT REFERENCES ===")]
+    [SerializeField] private AAAaaaMovementController aaaaaaMovement;
+    [SerializeField] private AAAaaaCameraController aaaaaaCamera;
+    [SerializeField] private AAAaaaMovementaaaAudioManager aaaaaaAudio;
+    
+    [Header("=== EXISTING SYSTEM REFERENCES ===")]
+    [SerializeField] private PlayeraaaMovementManager existingaaaMovementManager;
+    [SerializeField] private GroundedState existingGroundedState;
+    [SerializeField] private SimpleCharacterMotor existingCharacterMotor;
+    
+    [Header("=== CAMERA SETUP ===")]
+    [SerializeField] private aaaCamera playeraaaCamera;
+    [SerializeField] private Transform cameraParent;
+    
+    // State tracking
+    private bool isInitialized = false;
+    private bool wasGroundedLastFrame = false;
+    
+    void Start()
+    {
+        InitializeAAASystem();
+    }
+    
+    void Update()
+    {
+        if (isInitialized)
+        {
+            // Press F to toggle between AAA ground movement and Celestial Flight systems
+            if (Input.GetKeyDown(Controls.ToggleFlight))
+            {
+                ToggleAAASystem();
+            }
+
+            if (useAAAaaaMovement)
+            {
+                HandleSystemIntegration();
+            }
+
+            if (enableDebugMode)
+            {
+                HandleDebugInput();
+            }
+        }
+    }
+    
+    private void InitializeAAASystem()
+    {
+        if (enableDebugMode)
+            Debug.Log("<color=cyan>🚀 Initializing AAA aaaMovement System...</color>");
+        
+        // Auto-find components if not assigned
+        AutoFindComponents();
+        
+        // Setup AAA aaaMovement Controller
+        SetupaaaMovementController();
+        
+        // Setup AAA aaaCamera Controller
+        SetupaaaCameraController();
+        
+        // Setup aaaAudio Manager
+        SetupaaaAudioManager();
+        
+        // Disable existing systems if requested
+        if (replaceExistingaaaMovement)
+        {
+            DisableExistingSystems();
+        }
+        
+        isInitialized = true;
+
+        // Apply starting state (Celestial flight by default)
+        if (!useAAAaaaMovement)
+        {
+            // Disable AAA components
+            if (aaaMovement != null) aaaMovement.enabled = false;
+            if (aaaCamera != null) aaaCamera.enabled = false;
+            if (aaaAudio != null) aaaAudio.enabled = false;
+            // Ensure legacy systems are enabled
+            if (existingaaaMovementManager != null) existingaaaMovementManager.enabled = true;
+            if (existingCharacterMotor != null) existingCharacterMotor.enabled = true;
+
+            // Physics: disable CharacterController & free Rigidbody
+            CharacterController ccInit = GetComponent<CharacterController>();
+            if (ccInit != null) ccInit.enabled = false;
+            Rigidbody rbInit = GetComponent<Rigidbody>();
+            if (rbInit != null) rbInit.isKinematic = false;
+        }
+        else
+        {
+            // If starting with AAA movement, disable legacy
+            DisableExistingSystems();
+        }
+
+        if (enableDebugMode)
+        {
+            Debug.Log("<color=green>✅ AAA aaaMovement System Initialized Successfully!</color>");
+            LogSystemStatus();
+        }
+    }
+    
+    private void AutoFindComponents()
+    {
+        // Find AAA components
+        if (aaaMovement == null)
+            aaaMovement = GetComponent<AAAaaaMovementController>();
+        
+        if (aaaCamera == null)
+            aaaCamera = GetComponentInChildren<AAAaaaCameraController>();
+        
+        if (aaaAudio == null)
+            aaaAudio = GetComponent<AAAaaaMovementaaaAudioManager>();
+        
+        // Find existing components
+        if (existingaaaMovementManager == null)
+            existingaaaMovementManager = GetComponent<PlayeraaaMovementManager>();
+        
+        // GroundedState is a plain class, not a Component, so we cannot GetComponent it.
+        // It's handled indirectly via PlayeraaaMovementManager, so no need to fetch it here.
+        
+        if (existingCharacterMotor == null)
+            existingCharacterMotor = GetComponent<SimpleCharacterMotor>();
+        
+        // Find camera
+        if (playeraaaCamera == null)
+            playeraaaCamera = GetComponentInChildren<aaaCamera>();
+        
+        if (cameraParent == null && playeraaaCamera != null)
+            cameraParent = playeraaaCamera.transform.parent;
+    }
+    
+    private void SetupaaaMovementController()
+    {
+        if (aaaMovement == null)
+        {
+            aaaMovement = gameObject.AddComponent<AAAaaaMovementController>();
+            if (enableDebugMode)
+                Debug.Log("<color=yellow>➕ Added AAAaaaMovementController component</color>");
+        }
+        
+        // Ensure CharacterController exists
+        CharacterController controller = GetComponent<CharacterController>();
+        if (controller == null)
+        {
+            controller = gameObject.AddComponent<CharacterController>();
+            controller.height = 2f;
+            controller.radius = 0.5f;
+            controller.center = new Vector3(0, 1f, 0);
+            
+            if (enableDebugMode)
+                Debug.Log("<color=yellow>➕ Added CharacterController component</color>");
+        }
+    }
+    
+    private void SetupaaaCameraController()
+    {
+        if (playeraaaCamera == null)
+        {
+            if (enableDebugMode)
+                Debug.LogWarning("⚠️ No camera found! Please assign a camera manually.");
+            return;
+        }
+        
+        if (aaaCamera == null)
+        {
+            aaaCamera = playeraaaCamera.gameObject.AddComponent<AAAaaaCameraController>();
+            if (enableDebugMode)
+                Debug.Log("<color=yellow>➕ Added AAAaaaCameraController to camera</color>");
+        }
+        
+        // Ensure camera is properly parented
+        if (cameraParent == null)
+        {
+            GameObject cameraParentGO = new GameObject("aaaCameraParent");
+            cameraParentGO.transform.SetParent(transform);
+            cameraParentGO.transform.localPosition = new Vector3(0, 1.6f, 0);
+            playeraaaCamera.transform.SetParent(cameraParentGO.transform);
+            playeraaaCamera.transform.localPosition = Vector3.zero;
+            playeraaaCamera.transform.localRotation = Quaternion.identity;
+            cameraParent = cameraParentGO.transform;
+            
+            if (enableDebugMode)
+                Debug.Log("<color=yellow>➕ Created camera parent hierarchy</color>");
+        }
+    }
+    
+    private void SetupaaaAudioManager()
+    {
+        if (aaaAudio == null)
+        {
+            aaaAudio = gameObject.AddComponent<AAAaaaMovementaaaAudioManager>();
+            if (enableDebugMode)
+                Debug.Log("<color=yellow>➕ Added AAAaaaMovementaaaAudioManager component</color>");
+        }
+        
+        // Ensure aaaAudioSource exists
+        aaaAudioSource audioSource = GetComponent<aaaAudioSource>();
+        if (audioSource == null)
+        {
+            audioSource = gameObject.AddComponent<aaaAudioSource>();
+            audioSource.spatialBlend = 0f; // 2D audio
+            
+            if (enableDebugMode)
+                Debug.Log("<color=yellow>➕ Added aaaAudioSource component</color>");
+        }
+    }
+    
+    private void DisableExistingSystems()
+    {
+        if (existingaaaMovementManager != null)
+        {
+            existingaaaMovementManager.enabled = false;
+            if (enableDebugMode)
+                Debug.Log("<color=orange>🔇 Disabled existing PlayeraaaMovementManager</color>");
+        }
+        
+        // Note: GroundedState is not a MonoBehaviour, so we can't disable it directly
+        // It will be bypassed when the PlayeraaaMovementManager is disabled
+        if (existingGroundedState != null && enableDebugMode)
+        {
+            Debug.Log("<color=orange>🔇 GroundedState will be bypassed (not a MonoBehaviour)</color>");
+        }
+        
+        if (existingCharacterMotor != null)
+        {
+            existingCharacterMotor.enabled = false;
+            if (enableDebugMode)
+                Debug.Log("<color=orange>🔇 Disabled existing SimpleCharacterMotor</color>");
+        }
+        
+        // Disable Rigidbody if present (CharacterController doesn't use it)
+        Rigidbody rb = GetComponent<Rigidbody>();
+        if (rb != null)
+        {
+            rb.isKinematic = true;
+            if (enableDebugMode)
+                Debug.Log("<color=orange>🔇 Set Rigidbody to kinematic</color>");
+        }
+    }
+    
+    private void HandleSystemIntegration()
+    {
+        // Handle landing detection
+        if (aaaMovement != null)
+        {
+            bool isGroundedNow = aaaMovement.IsGrounded;
+            
+            if (isGroundedNow && !wasGroundedLastFrame)
+            {
+                // Just landed
+                
+                if (aaaCamera != null)
+                {
+                    aaaCamera.TriggerLandingShake();
+                }
+            }
+            
+            wasGroundedLastFrame = isGroundedNow;
+        }
+        
+        // Handle jump detection
+        if (Input.GetKeyDown(Controls.UpThrustJump) && aaaMovement != null && aaaMovement.IsGrounded)
+        {
+        }
+    }
+    
+    private void HandleDebugInput()
+    {
+        // Toggle AAA system on/off with F1
+        if (Input.GetKeyDown(KeyCode.F1))
+        {
+            ToggleAAASystem();
+        }
+        
+        // Reset player position with F2
+        if (Input.GetKeyDown(KeyCode.F2))
+        {
+            ResetPlayerPosition();
+        }
+        
+        // Toggle debug info with F3
+        if (Input.GetKeyDown(KeyCode.F3))
+        {
+            LogSystemStatus();
+        }
+    }
+    
+    private void ToggleAAASystem()
+    {
+        useAAAaaaMovement = !useAAAaaaMovement;
+        
+        // *** Handle platform detection for smooth landing ***
+        if (useAAAaaaMovement) {
+            // First try to use the locked-on platform (highest priority)
+            CelestialPlatform targetPlatform = null;
+            
+            // Check if we have a locked platform
+            if (existingaaaMovementManager != null && existingaaaMovementManager.IsLockedOn) {
+                // Get the locked platform using the public property
+                targetPlatform = existingaaaMovementManager.LockedPlatform;
+                if (enableDebugMode)
+                    Debug.Log($"<color=green>🎯 Using locked-on platform: {targetPlatform.name}</color>");
+            }
+            
+            // Fallback: Find platform below if no lock-on
+            if (targetPlatform == null) {
+                targetPlatform = FindPlatformBelow();
+            }
+            
+            // Apply parenting if we found any platform
+            if (targetPlatform != null) {
+                // Parent to platform for proper sticking
+                transform.SetParent(targetPlatform.transform, true);
+                if (enableDebugMode)
+                    Debug.Log($"<color=green>🔄 Parented to platform: {targetPlatform.name}</color>");
+            }
+        } else {
+            // When switching back to flight mode, unparent
+            transform.SetParent(null, true);
+        }
+        
+        // Toggle AAA components
+        if (aaaMovement != null)
+            aaaMovement.enabled = useAAAaaaMovement;
+        if (aaaCamera != null)
+            aaaCamera.enabled = useAAAaaaMovement;
+        if (aaaAudio != null)
+            aaaAudio.enabled = useAAAaaaMovement;
+
+        // Toggle Rigidbody / CharacterController based on mode
+        CharacterController cc = GetComponent<CharacterController>();
+        Rigidbody rb = GetComponent<Rigidbody>();
+        if (cc != null)
+            cc.enabled = useAAAaaaMovement; // Only needed for AAA ground movement
+        if (rb != null)
+            rb.isKinematic = useAAAaaaMovement; // Rigidbody free when flying
+
+        // Toggle existing systems (only MonoBehaviour components)
+        if (existingaaaMovementManager != null)
+            existingaaaMovementManager.enabled = !useAAAaaaMovement;
+        if (existingCharacterMotor != null)
+            existingCharacterMotor.enabled = !useAAAaaaMovement;
+
+        Debug.Log($"<color=cyan>🔄 AAA aaaMovement System: {(useAAAaaaMovement ? "ENABLED" : "DISABLED")}</color>");
+    }
+    
+    private void ResetPlayerPosition()
+    {
+        transform.position = Vector3.up * 2f;
+        if (aaaMovement != null)
+        {
+            // Reset velocity if possible through reflection or public method
+            Debug.Log("<color=green>🔄 Player position reset</color>");
+        }
+    }
+    
+    private void LogSystemStatus()
+    {
+        Debug.Log("<color=cyan>=== AAA MOVEMENT SYSTEM STATUS ===</color>");
+        Debug.Log($"AAA aaaMovement: {(aaaMovement != null && aaaMovement.enabled ? "✅" : "❌")}");
+        Debug.Log($"AAA aaaCamera: {(aaaCamera != null && aaaCamera.enabled ? "✅" : "❌")}");
+        Debug.Log($"AAA aaaAudio: {(aaaAudio != null && aaaAudio.enabled ? "✅" : "❌")}");
+        Debug.Log($"AAA VFX: REMOVED");
+        
+        if (aaaMovement != null)
+        {
+            Debug.Log($"Current Speed: {aaaMovement.CurrentSpeed:F1} m/s");
+            Debug.Log($"Is Grounded: {aaaMovement.IsGrounded}");
+            Debug.Log($"Is Crouching: {aaaMovement.IsCrouching}");
+            Debug.Log($"Is Sliding: {aaaMovement.IsSliding}");
+        }
+        
+        Debug.Log("<color=cyan>=== CONTROLS ===</color>");
+        Debug.Log("F1: Toggle AAA System | F2: Reset Position | F3: Debug Info");
+        Debug.Log("WASD: Move | Shift: Sprint | Ctrl: Crouch/Slide | Space: Jump");
+    }
+    
+    void OnGUI()
+    {
+        if (!enableDebugMode || !useAAAaaaMovement) return;
+        
+        // Debug overlay
+        GUILayout.BeginArea(new Rect(10, 10, 300, 200));
+        GUILayout.BeginVertical("box");
+        
+        GUILayout.Label("<b>AAA aaaMovement System</b>");
+        
+        if (aaaMovement != null)
+        {
+            GUILayout.Label($"Speed: {aaaMovement.CurrentSpeed:F1} m/s");
+            GUILayout.Label($"Grounded: {aaaMovement.IsGrounded}");
+            GUILayout.Label($"Crouching: {aaaMovement.IsCrouching}");
+            GUILayout.Label($"Sliding: {aaaMovement.IsSliding}");
+        }
+        
+        if (aaaCamera != null)
+        {
+            GUILayout.Label($"FOV: {aaaCamera.CurrentFOV:F0}°");
+        }
+        
+        GUILayout.Space(10);
+        GUILayout.Label("<b>Debug Controls:</b>");
+        GUILayout.Label("F1: Toggle System");
+        GUILayout.Label("F2: Reset Position");
+        GUILayout.Label("F3: Log Status");
+        
+        GUILayout.EndVertical();
+        GUILayout.EndArea();
+    }
+    
+    // Public methods for external integration
+    public void EnableAAASystem()
+    {
+        useAAAaaaMovement = true;
+        ToggleAAASystem();
+    }
+    
+    public void DisableAAASystem()
+    {
+        useAAAaaaMovement = false;
+        ToggleAAASystem();
+    }
+    
+    public bool IsAAASystemActive()
+    {
+        return useAAAaaaMovement && isInitialized;
+    }
+    
+    public AAAaaaMovementController GetaaaMovementController()
+    {
+        return aaaMovement;
+    }
+    
+    public AAAaaaCameraController GetaaaCameraController()
+    {
+        return aaaCamera;
+    }
+    
+    // Helper method to detect a platform below the player
+    private CelestialPlatform FindPlatformBelow()
+    {
+        float rayDistance = 5.0f; // Check 5 meters below player
+        if (Physics.Raycast(transform.position, Vector3.down, out RaycastHit hit, rayDistance))
+        {
+            // First check direct hit for CelestialPlatform
+            CelestialPlatform platform = hit.collider.GetComponent<CelestialPlatform>();
+            
+            // If not found directly on hit collider, try parent
+            if (platform == null)
+                platform = hit.collider.GetComponentInParent<CelestialPlatform>();
+                
+            if (platform != null)
+            {
+                if (enableDebugMode)
+                    Debug.Log($"<color=lime>✓ Found platform below: {platform.name}</color>");
+                return platform;
+            }
+        }
+        
+        return null;
+    }
+}
