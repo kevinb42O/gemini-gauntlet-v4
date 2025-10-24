@@ -1,1 +1,0 @@
-# gemini-gauntlet-v4
