@@ -2181,10 +2181,12 @@ public class CleanAAACrouch : MonoBehaviour
             
             if (!Mathf.Approximately(newH, controller.height))
             {
-                // CRITICAL: Keep center.y CONSTANT so CharacterController doesn't move the GameObject!
-                // Only change the HEIGHT - center stays at standing height / 2
+                // CRITICAL FIX: Update both height AND center.y to match AAAMovementController pattern
+                // Center must ALWAYS be at height / 2 to prevent CharacterController from moving GameObject
                 controller.height = newH;
-                // DON'T change center.y at all!
+                Vector3 c = controller.center;
+                c.y = newH * 0.5f; // Always half-height (matches AAAMovementController.SetupControllerDimensions)
+                controller.center = c;
             }
         }
 
