@@ -175,16 +175,17 @@ public class LayeredHandAnimationController : MonoBehaviour
     // === PASSTHROUGH METHODS - All logic handled by PlayerAnimationStateManager ===
     
     /// <summary>
-    /// Set movement state with optional sprint direction for directional animations
+    /// Set movement state - unified sprint animation (no direction variants)
+    /// Animation speed is automatically synced in IndividualLayeredHandController.Update()
     /// </summary>
-    public void SetMovementState(int movementState, IndividualLayeredHandController.SprintDirection sprintDirection = IndividualLayeredHandController.SprintDirection.Forward)
+    public void SetMovementState(int movementState)
     {
-        // Direct passthrough to individual hand controllers with sprint direction
+        // Direct passthrough to individual hand controllers
         var leftHand = GetCurrentLeftHand();
         var rightHand = GetCurrentRightHand();
         
-        leftHand?.SetMovementState((IndividualLayeredHandController.MovementState)movementState, sprintDirection);
-        rightHand?.SetMovementState((IndividualLayeredHandController.MovementState)movementState, sprintDirection);
+        leftHand?.SetMovementState((IndividualLayeredHandController.MovementState)movementState);
+        rightHand?.SetMovementState((IndividualLayeredHandController.MovementState)movementState);
     }
     
     // === SHOOTING METHODS ===

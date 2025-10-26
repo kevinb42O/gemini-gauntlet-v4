@@ -21,6 +21,11 @@ public class CelestialPlatform : MonoBehaviour
     private Vector3 _currentPosition;
     private Vector3 _movementDelta;
     
+    // ROTATION TRACKING: For spinning platforms
+    private Quaternion _previousRotation;
+    private Quaternion _currentRotation;
+    private Quaternion _rotationDelta;
+    
     // Legacy fields for backward compatibility (will be removed eventually)
     private Vector3 _currentFramePredictedPosition;
     private Quaternion _currentFramePredictedRotation;
@@ -73,6 +78,11 @@ public class CelestialPlatform : MonoBehaviour
         _currentPosition = transform.position;
         _previousPosition = transform.position;
         _movementDelta = Vector3.zero;
+        
+        // Initialize rotation tracking
+        _currentRotation = transform.rotation;
+        _previousRotation = transform.rotation;
+        _rotationDelta = Quaternion.identity;
 
         // Enable update loop only if the platform actually moves.
         enabled = !Mathf.Approximately(speed, 0f);
@@ -83,17 +93,43 @@ public class CelestialPlatform : MonoBehaviour
     // ZERO-JITTER SYSTEM: Calculate movement in FixedUpdate for physics consistency
     void FixedUpdate()
     {
-        if (orbitalCenterTarget == null)
+        // Process orbital movement first (if initialized)
+        if (orbitalCenterTarget != null && !Mathf.Approximately(speed, 0f) && !isFrozen)
         {
-            // Platform was placed manually in scene and not initialized by UniverseManager.
-            // Still update cached values so other scripts don't get default zeros.
-            _currentFramePredictedPosition = transform.position;
-            _currentFramePredictedRotation = transform.rotation;
-            _currentFrameVelocity = Vector3.zero;
-            return;
+            ProcessOrbitalMovement();
         }
-
-        // For frozen platforms, ensure cached values are updated
+    }
+    
+    // LateFixedUpdate equivalent - runs after all FixedUpdates via yield
+    void LateUpdate()
+    {
+        if (!enabled) return;
+        
+        // CRITICAL: Track rotation AFTER all FixedUpdates (including RotatingAnchorPoint)
+        // This catches external rotation from RotatingAnchorPoint or any other script
+        Quaternion currentRotation = transform.rotation;
+        bool platformRotated = Quaternion.Angle(currentRotation, _currentRotation) > 0.01f;
+        
+        if (platformRotated)
+        {
+            _previousRotation = _currentRotation;
+            _currentRotation = currentRotation;
+            _rotationDelta = _currentRotation * Quaternion.Inverse(_previousRotation);
+            
+            // Apply rotation to passengers immediately
+            if (_passengers.Count > 0)
+            {
+                float rotationAngle = Quaternion.Angle(_rotationDelta, Quaternion.identity);
+                Debug.Log($"[PLATFORM] {name} rotating {rotationAngle:F2}° with {_passengers.Count} passengers");
+                MoveAndRotatePassengers(Vector3.zero, _rotationDelta);
+            }
+            
+            _rotationDelta = Quaternion.identity;
+        }
+    }
+    
+    private void ProcessOrbitalMovement()
+    {
         if (isFrozen)
         {
             _currentFramePredictedPosition = frozenPosition;
@@ -105,8 +141,9 @@ public class CelestialPlatform : MonoBehaviour
         // ZERO-JITTER: Calculate platform movement in FixedUpdate for physics consistency
         if (orbitalCenterTarget != null && !Mathf.Approximately(speed, 0f))
         {
-            // Store previous position
+            // Store previous position AND rotation
             _previousPosition = _currentPosition;
+            _previousRotation = _currentRotation;
             
             // Advance orbital angle using FixedUpdate's consistent timing
             currentAngle += speed * Time.fixedDeltaTime;
@@ -126,15 +163,6 @@ public class CelestialPlatform : MonoBehaviour
             // Keep platform level for walking
             transform.rotation = Quaternion.identity;
             
-            // CRITICAL: Move passengers IMMEDIATELY in same physics step
-            if (_movementDelta.sqrMagnitude > 0.0001f)
-            {
-                MovePassengers(_movementDelta);
-            }
-            
-            // Reset delta after application
-            _movementDelta = Vector3.zero;
-            
             // Legacy: Calculate velocity for backward compatibility
             float angleInRadians = currentAngle * Mathf.Deg2Rad;
             Vector3 localTangentDirection = new Vector3(-Mathf.Sin(angleInRadians), 0, Mathf.Cos(angleInRadians));
@@ -145,13 +173,29 @@ public class CelestialPlatform : MonoBehaviour
             // Update cached values
             _currentFramePredictedPosition = transform.position;
             _currentFramePredictedRotation = transform.rotation;
+            
+            // CRITICAL: Apply orbital movement to passengers
+            if (_movementDelta.sqrMagnitude > 0.0001f && _passengers.Count > 0)
+            {
+                MoveAndRotatePassengers(_movementDelta, Quaternion.identity);
+            }
+            
+            // Reset movement delta
+            _movementDelta = Vector3.zero;
         }
     }
 
-    // ZERO-JITTER: Direct passenger movement in FixedUpdate for perfect sync
-    private void MovePassengers(Vector3 movementDelta)
+    // ZERO-JITTER: Direct passenger movement and rotation
+    private void MoveAndRotatePassengers(Vector3 movementDelta, Quaternion rotationDelta)
     {
-        if (_passengers.Count == 0 || movementDelta.sqrMagnitude < 0.0001f) return;
+        if (_passengers.Count == 0) return;
+        
+        bool hasMovement = movementDelta.sqrMagnitude > 0.0001f;
+        bool hasRotation = Quaternion.Angle(rotationDelta, Quaternion.identity) > 0.01f;
+        
+        if (!hasMovement && !hasRotation) return;
+        
+        Vector3 platformCenter = transform.position;
         
         // Move ALL passengers unconditionally - grounded check happens AFTER movement in LateUpdate
         for (int i = _passengers.Count - 1; i >= 0; i--)
@@ -165,8 +209,27 @@ public class CelestialPlatform : MonoBehaviour
                 continue;
             }
             
-            // Move passenger directly - they'll check grounded state in their LateUpdate
-            passenger.MovePlatformPassenger(movementDelta);
+            Vector3 totalMovement = movementDelta;
+            
+            // Apply rotation if platform rotated
+            if (hasRotation)
+            {
+                // Get passenger position relative to platform center
+                Vector3 passengerRelativePos = passenger.transform.position - platformCenter;
+                
+                // Rotate this relative position
+                Vector3 rotatedRelativePos = rotationDelta * passengerRelativePos;
+                
+                // Calculate additional movement from rotation
+                Vector3 rotationMovement = rotatedRelativePos - passengerRelativePos;
+                totalMovement += rotationMovement;
+            }
+            
+            // Move passenger - they'll check grounded state in their LateUpdate
+            if (totalMovement.sqrMagnitude > 0.0001f)
+            {
+                passenger.MovePlatformPassenger(totalMovement);
+            }
         }
     }
     

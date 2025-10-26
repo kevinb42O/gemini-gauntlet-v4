@@ -60,14 +60,14 @@ public class FallingDamageSystem : MonoBehaviour
     [SerializeField] private float landingCooldown = 0.5f; // Cooldown between landing detections (prevents jitter spam)
     
     [Header("Falling Wind Sound")]
-    [SerializeField] private float windSoundSpeedThreshold = 70f; // Minimum fall speed (downward velocity) to trigger wind sound
-    [SerializeField] private float windSoundVolume = 0.7f; // Volume of the wind sound
-    [Tooltip("Enable wind sound during aerial tricks (overrides speed threshold)")]
-    [SerializeField] private bool enableTrickWindSound = true;
-    [Tooltip("Fade in duration for wind sound (seconds)")]
-    [SerializeField] private float windSoundFadeInDuration = 0.3f;
-    [Tooltip("Fade out duration for wind sound (seconds)")]
-    [SerializeField] private float windSoundFadeOutDuration = 0.4f;
+    [SerializeField] private float windSoundSpeedThreshold = 1500f; // Minimum speed (any direction) to trigger wind sound (faster than sprint)
+    [SerializeField] private float windSoundMinVolume = 0.3f; // Volume at threshold speed
+    [SerializeField] private float windSoundMaxVolume = 1.0f; // Volume at max speed
+    [SerializeField] private float windSoundMaxSpeed = 3000f; // Speed for maximum volume (terminal velocity)
+    [Tooltip("Hysteresis offset to prevent jittery on/off (stop threshold is lower)")]
+    [SerializeField] private float windSoundHysteresis = 100f; // Stop at 1400 if threshold is 1500
+    [Tooltip("Cooldown after jump/landing before wind sound can start (prevents glitchy triggering on jumps)")]
+    [SerializeField] private float windSoundJumpCooldown = 0.5f; // Half second cooldown after jump
     
     [Header("=== 🎯 UNIFIED IMPACT SYSTEM ===")]
     [Tooltip("Base camera compression amount for landing impacts (used for calculation)")]
@@ -86,7 +86,9 @@ public class FallingDamageSystem : MonoBehaviour
     private bool wasGroundedLastFrame = true;
     private float fallStartTime = 0f;
     private bool isWindSoundPlaying = false;
+    private SoundHandle windSoundHandle = SoundHandle.Invalid;
     private float lastLandingProcessedTime = -999f; // Anti-spam cooldown
+    private float lastJumpOrLandingTime = -999f; // Track last jump/landing for wind sound cooldown
     
     // Collision damage tracking
     private float lastCollisionDamageTime = -999f;
@@ -154,6 +156,9 @@ public class FallingDamageSystem : MonoBehaviour
             lastVelocity = movementController.Velocity;
         }
         
+        // Update wind sound based on current speed (works in ANY state)
+        UpdateWindSound();
+        
         // Check if we're grounded using the movement controller if available
         bool isGrounded = movementController != null ? movementController.IsGrounded : controller.isGrounded;
         
@@ -169,7 +174,7 @@ public class FallingDamageSystem : MonoBehaviour
             // Track fall progress
             if (isFalling && !isGrounded)
             {
-                UpdateFall();
+                TrackFallProgress();
             }
             
             // Detect when we land (end falling)
@@ -183,13 +188,6 @@ public class FallingDamageSystem : MonoBehaviour
             // On platform - cancel any active fall tracking
             if (isFalling)
             {
-                // Clean up wind sound
-                if (isWindSoundPlaying)
-                {
-                    GameSounds.StopFallingWindLoop();
-                    isWindSoundPlaying = false;
-                }
-                
                 // Reset fall state without damage
                 isFalling = false;
                 fallStartHeight = 0f;
@@ -197,19 +195,6 @@ public class FallingDamageSystem : MonoBehaviour
                 fallStartTime = 0f;
                 
                 Debug.Log("[FallingDamageSystem] ✅ On moving platform - fall tracking cancelled");
-            }
-        }
-        
-        // EDGE CASE: Stop wind sound if grounded and no tricks active
-        // (Handles case where trick ends but wind sound is still playing)
-        if (isGrounded && isWindSoundPlaying)
-        {
-            bool isTrickActive = enableTrickWindSound && cameraController != null && cameraController.IsTrickActive;
-            if (!isTrickActive)
-            {
-                GameSounds.StopFallingWindLoop();
-                isWindSoundPlaying = false;
-                Debug.Log("[FallingDamageSystem] Wind sound stopped - grounded and no tricks active");
             }
         }
         
@@ -256,58 +241,19 @@ public class FallingDamageSystem : MonoBehaviour
         fallStartTime = Time.time;
         isWindSoundPlaying = false;
         
+        // Record jump time to prevent wind sound from triggering immediately
+        lastJumpOrLandingTime = Time.time;
+        
         // Debug log removed - only log actual falls (ones that last > minAirTimeForFallDetection)
     }
     
-    private void UpdateFall()
+    private void TrackFallProgress()
     {
         // Track the highest point during the fall (in case player jumps or gets pushed up)
         float currentHeight = transform.position.y;
         if (currentHeight > highestPointDuringFall)
         {
             highestPointDuringFall = currentHeight;
-        }
-        
-        // SMART WIND SOUND: Check if tricks are active OR fall speed is high enough
-        bool shouldPlayWindSound = false;
-        
-        // Check if performing aerial tricks
-        if (enableTrickWindSound && cameraController != null && cameraController.IsTrickActive)
-        {
-            shouldPlayWindSound = true;
-        }
-        // Otherwise, check fall speed threshold (normal falling)
-        else if (movementController != null)
-        {
-            float fallSpeed = -movementController.Velocity.y;
-            if (fallSpeed >= windSoundSpeedThreshold)
-            {
-                shouldPlayWindSound = true;
-            }
-        }
-        
-        // Start wind sound with fade in
-        if (shouldPlayWindSound && !isWindSoundPlaying)
-        {
-            GameSounds.StartFallingWindLoop(transform, windSoundVolume);
-            isWindSoundPlaying = true;
-            
-            if (cameraController != null && cameraController.IsTrickActive)
-            {
-                Debug.Log($"[FallingDamageSystem] 🎪 Wind sound started - TRICK MODE ACTIVE!");
-            }
-            else
-            {
-                float fallSpeed = -movementController.Velocity.y;
-                Debug.Log($"[FallingDamageSystem] Wind sound started at fall speed: {fallSpeed:F1} units/s");
-            }
-        }
-        // Stop wind sound with fade out if conditions no longer met
-        else if (!shouldPlayWindSound && isWindSoundPlaying)
-        {
-            GameSounds.StopFallingWindLoop();
-            isWindSoundPlaying = false;
-            Debug.Log($"[FallingDamageSystem] Wind sound stopped - conditions no longer met");
         }
     }
     
@@ -322,13 +268,6 @@ public class FallingDamageSystem : MonoBehaviour
         float timeSinceLastLanding = Time.time - lastLandingProcessedTime;
         if (timeSinceLastLanding < landingCooldown)
         {
-            // Clean up any wind sound that might have started
-            if (isWindSoundPlaying)
-            {
-                GameSounds.StopFallingWindLoop();
-                isWindSoundPlaying = false;
-            }
-            
             // Reset fall tracking WITHOUT logging
             isFalling = false;
             fallStartHeight = 0f;
@@ -342,13 +281,6 @@ public class FallingDamageSystem : MonoBehaviour
         // CRITICAL FIX: Only process falls that lasted long enough (prevents spam on tiny bumps/steps)
         if (airTime < minAirTimeForFallDetection)
         {
-            // Clean up any wind sound that might have started
-            if (isWindSoundPlaying)
-            {
-                GameSounds.StopFallingWindLoop();
-                isWindSoundPlaying = false;
-            }
-            
             // Reset fall tracking WITHOUT logging or processing damage
             isFalling = false;
             fallStartHeight = 0f;
@@ -361,14 +293,7 @@ public class FallingDamageSystem : MonoBehaviour
         
         // Mark that we're processing this landing
         lastLandingProcessedTime = Time.time;
-        
-        // Stop wind sound if it was playing
-        if (isWindSoundPlaying)
-        {
-            GameSounds.StopFallingWindLoop();
-            isWindSoundPlaying = false;
-            Debug.Log("[FallingDamageSystem] Wind sound stopped");
-        }
+        lastJumpOrLandingTime = Time.time; // Also record for wind sound cooldown
         
         // Calculate total fall distance from highest point
         float currentHeight = transform.position.y;
@@ -397,6 +322,66 @@ public class FallingDamageSystem : MonoBehaviour
         fallStartHeight = 0f;
         highestPointDuringFall = 0f;
         fallStartTime = 0f;
+    }
+    
+    /// <summary>
+    /// 🌬️ SIMPLE WIND SOUND SYSTEM - Speed based with dynamic volume
+    /// Works with ANY movement - falling, flying, grappling, etc.
+    /// FIXED: Now respects jump/landing cooldown to prevent glitchy triggering
+    /// </summary>
+    private void UpdateWindSound()
+    {
+        if (movementController == null) return;
+        
+        // Get TOTAL speed in any direction
+        float currentSpeed = movementController.Velocity.magnitude;
+        
+        // Check if we're in the cooldown period after a jump/landing
+        float timeSinceJumpOrLanding = Time.time - lastJumpOrLandingTime;
+        bool inCooldown = timeSinceJumpOrLanding < windSoundJumpCooldown;
+        
+        // Determine if wind should play based on speed with HYSTERESIS
+        bool shouldPlay = false;
+        if (isWindSoundPlaying)
+        {
+            // Currently playing - use lower threshold to stop (prevents jitter)
+            shouldPlay = currentSpeed >= (windSoundSpeedThreshold - windSoundHysteresis);
+        }
+        else
+        {
+            // Not playing - use normal threshold to start AND check cooldown
+            shouldPlay = currentSpeed >= windSoundSpeedThreshold && !inCooldown;
+        }
+        
+        // Start wind sound if needed
+        if (shouldPlay && !isWindSoundPlaying)
+        {
+            windSoundHandle = GameSounds.StartFallingWindLoop(transform, windSoundMinVolume);
+            isWindSoundPlaying = true;
+            Debug.Log($"[FallingDamageSystem] 🌬️ Wind sound STARTED at speed: {currentSpeed:F1} units/s");
+        }
+        // Stop wind sound if needed
+        else if (!shouldPlay && isWindSoundPlaying)
+        {
+            if (windSoundHandle.IsValid)
+            {
+                windSoundHandle.Stop();
+            }
+            GameSounds.StopFallingWindLoop();
+            isWindSoundPlaying = false;
+            windSoundHandle = SoundHandle.Invalid;
+            Debug.Log($"[FallingDamageSystem] 🌬️ Wind sound STOPPED at speed: {currentSpeed:F1} units/s");
+        }
+        // Update volume based on speed if playing
+        else if (isWindSoundPlaying && windSoundHandle.IsValid)
+        {
+            // Calculate volume based on speed (louder = faster)
+            float speedPercent = Mathf.InverseLerp(windSoundSpeedThreshold, windSoundMaxSpeed, currentSpeed);
+            float targetVolume = Mathf.Lerp(windSoundMinVolume, windSoundMaxVolume, speedPercent);
+            
+            // Set volume on the sound handle
+            windSoundHandle.SetVolume(targetVolume);
+        }
     }
     
     /// <summary>

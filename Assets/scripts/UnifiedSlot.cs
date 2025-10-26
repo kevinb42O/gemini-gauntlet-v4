@@ -48,6 +48,9 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
     [Tooltip("Is this an equipment slot (vest/backpack)? If true, prevents dragging items OUT")]
     public bool isEquipmentSlot = false;
     
+    [Tooltip("Is this a weapon equipment slot (right/left hand weapon)? If true, allows dragging OUT but triggers equipment events")]
+    public bool isWeaponSlot = false;
+    
     // Properties
     public ChestItemData CurrentItem { get; private set; }
     public int ItemCount { get; private set; }
@@ -58,6 +61,9 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
     public event System.Action<UnifiedSlot> OnDoubleClick;
     public event System.Action<UnifiedSlot, UnifiedSlot> OnItemDropped;
     public event System.Action<UnifiedSlot> OnRightClick; // New event for right-click delete
+    
+    // Event for equipment slot changes (used by WeaponEquipmentManager)
+    public event System.Action<ChestItemData, int> OnSlotChanged;
     
     // Drag & Drop state
     private static UnifiedSlot _draggedSlot;
@@ -211,6 +217,9 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
         ItemCount = count;
         UpdateVisuals();
         
+        // Trigger OnSlotChanged event for equipment tracking
+        OnSlotChanged?.Invoke(item, count);
+        
         if (item != null)
         {
             Debug.Log($"✅ Successfully placed {item.itemName} in {(isGemSlot ? "gem slot" : isForgeOutputSlot ? "forge output slot" : "regular slot")} {gameObject.name}");
@@ -274,17 +283,34 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
         
         // CRITICAL FIX: Regular inventory slots should NOT accept vests or backpacks
         // Vests and backpacks can ONLY go in their dedicated equipment slots
+        // SAME FOR WEAPONS: Weapons can ONLY go in weapon equipment slots
         // EXCEPTIONS:
-        // 1. Chest slots (which have chestSystem assigned) CAN hold vests/backpacks for looting
-        // 2. Stash slots CAN hold vests/backpacks for storage
-        // 3. Equipment slots managed by VestSlotController/BackpackSlotController (detected by checking if this slot already has a vest/backpack)
-        bool isEquipmentSlot = (CurrentItem is VestItem || CurrentItem is BackpackItem);
+        // 1. Chest slots (which have chestSystem assigned) CAN hold vests/backpacks/weapons for looting
+        // 2. Stash slots CAN hold vests/backpacks/weapons for storage
+        // 3. Equipment slots (isEquipmentSlot=true) for vests/backpacks
+        // 4. Weapon slots (isWeaponSlot=true) for weapons
+        bool isThisAnEquipmentSlot = isEquipmentSlot || isWeaponSlot;
         bool isChestSlot = (chestSystem != null);
         
+        // Block vests/backpacks from non-equipment slots
         if (!isStashSlot && !isForgeInputSlot && !isChestSlot && !isEquipmentSlot && (IsVestItem(item) || IsBackpackItem(item)))
         {
             Debug.Log($"[UnifiedSlot] ❌ REJECTED: Cannot place {item.itemName} ({item.itemType}) in regular inventory slot - must use equipment slot");
             return false;
+        }
+        
+        // ✅ FIX: Allow weapons in regular inventory slots AND stash slots (for unequipping)
+        // Weapons CAN be stored in inventory/stash when unequipped
+        // Only block them from gem slots, forge slots (non-input), and equipment slots (vest/backpack)
+        if (IsWeaponItem(item))
+        {
+            // Weapons can go in: weapon slots, regular inventory, stash, chest slots, forge input slots
+            bool canAcceptWeapon = isWeaponSlot || (!isGemSlot && !isForgeOutputSlot && !isEquipmentSlot);
+            if (!canAcceptWeapon)
+            {
+                Debug.Log($"[UnifiedSlot] ❌ REJECTED: Cannot place {item.itemName} ({item.itemType}) in {(isGemSlot ? "gem slot" : isEquipmentSlot ? "equipment slot" : "this slot")}");
+                return false;
+            }
         }
         
         return true; // Regular item in regular slot
@@ -330,6 +356,17 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
     }
     
     /// <summary>
+    /// Check if an item is a weapon
+    /// </summary>
+    private bool IsWeaponItem(ChestItemData item)
+    {
+        if (item == null) return false;
+        
+        // Check if it's an EquippableWeaponItemData
+        return item is EquippableWeaponItemData;
+    }
+    
+    /// <summary>
     /// Clear this slot
     /// </summary>
     public void ClearSlot()
@@ -337,6 +374,10 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
         CurrentItem = null;
         ItemCount = 0;
         UpdateVisuals();
+        
+        // ⚔️ CRITICAL FIX: Fire OnSlotChanged event when clearing
+        // This ensures WeaponEquipmentManager gets notified when weapon slot is cleared
+        OnSlotChanged?.Invoke(null, 0);
     }
     
     /// <summary>
@@ -365,15 +406,34 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
         // COMPREHENSIVE DEBUG LOGGING FOR GEM DISPLAY ISSUES
         Debug.Log($" UpdateVisuals called on {gameObject.name} - isGemSlot: {isGemSlot}, isEmpty: {IsEmpty}");
         
-        // Null safety checks for UI components
-        if (itemIcon == null || countText == null)
+        // CRITICAL FIX: Only itemIcon is required - countText and slotBackground are optional!
+        if (itemIcon == null)
         {
-            Debug.LogError($" CRITICAL: UnifiedSlot on {gameObject.name}: Missing UI components! itemIcon={itemIcon != null}, countText={countText != null}");
-            Debug.LogError($" This is why gems aren't showing! Check Inspector assignments!");
+            Debug.LogError($"❌ UnifiedSlot on {gameObject.name}: Missing itemIcon component! Cannot display items!");
+            
+            // WEAPON SLOT FIX: Even if itemIcon is missing, ALWAYS show background if it exists
+            if (slotBackground != null)
+            {
+                slotBackground.gameObject.SetActive(true);
+                Debug.Log($"✅ Showing background for {gameObject.name} even though itemIcon is missing");
+            }
+            
             return;
         }
         
+        // Warn about missing optional components but don't block
+        if (countText == null && !isWeaponSlot)
+        {
+            Debug.LogWarning($"⚠️ UnifiedSlot on {gameObject.name}: Missing countText (optional - only needed for stackable items)");
+        }
+        
+        if (slotBackground == null && !isWeaponSlot)
+        {
+            Debug.LogWarning($"⚠️ UnifiedSlot on {gameObject.name}: Missing slotBackground (optional but recommended)");
+        }
+        
         // CRITICAL: ALWAYS ensure slot background is visible (never hide drop zones!)
+        // Show background even if countText is missing - background is ALWAYS visible!
         if (slotBackground != null)
         {
             slotBackground.gameObject.SetActive(true);
@@ -382,6 +442,7 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
             {
                 bgRect.SetAsFirstSibling(); // Move background to back
             }
+            Debug.Log($"✅ Background visible for {gameObject.name} (countText: {(countText != null ? "present" : "MISSING - OK")})");
         }
         
         if (IsEmpty)
@@ -396,7 +457,7 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
                 {
                     itemIcon.sprite = defaultGemSprite;
                     itemIcon.color = new Color(1f, 1f, 1f, 0.5f); // 50% transparency for default gem sprite
-                    countText.text = "0"; // Show 0 count for empty gem slots
+                    if (countText != null) countText.text = "0"; // Show 0 count for empty gem slots
                     Debug.Log($" Using inspector-assigned gem sprite for empty gem slot at 50% transparency: {defaultGemSprite.name}");
                 }
                 else
@@ -404,7 +465,7 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
                     Debug.LogWarning($" No defaultGemSprite assigned in inspector for gem slot {gameObject.name}!");
                     itemIcon.sprite = null;
                     itemIcon.color = new Color(1f, 1f, 1f, 0f);
-                    countText.text = "";
+                    if (countText != null) countText.text = "";
                 }
             }
             else if (isForgeInputSlot || isForgeOutputSlot)
@@ -412,7 +473,7 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
                 // FORGE slots: Hide item icon completely when empty (only show background)
                 itemIcon.sprite = null;
                 itemIcon.color = new Color(1f, 1f, 1f, 0f); // Completely invisible
-                countText.text = "";
+                if (countText != null) countText.text = "";
                 Debug.Log($" FORGE slot {gameObject.name} cleared - item icon hidden, background visible");
             }
             else
@@ -420,7 +481,7 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
                 // Regular slots: Clear icon when empty
                 itemIcon.sprite = null;
                 itemIcon.color = new Color(1f, 1f, 1f, 0f); // Fully transparent when empty
-                countText.text = "";
+                if (countText != null) countText.text = "";
             }
         }
         else
@@ -429,9 +490,15 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
             Debug.Log($" Item icon sprite: {(CurrentItem?.itemIcon != null ? CurrentItem.itemIcon.name : "NULL")}");
             Debug.Log($" IsGem check: {(CurrentItem != null ? IsGemItem(CurrentItem) : false)}");
             
+            // ✅ CRITICAL FIX: Check if item has a valid icon BEFORE setting it
             if (CurrentItem?.itemIcon == null)
             {
-                Debug.LogError($" CRITICAL: Item {CurrentItem?.itemName} has NULL itemIcon! This is why icon isn't showing!");
+                Debug.LogError($" CRITICAL: Item {CurrentItem?.itemName} has NULL itemIcon! Cannot display icon - clearing slot visual!");
+                // Clear the icon to prevent white square
+                itemIcon.sprite = null;
+                itemIcon.color = new Color(1f, 1f, 1f, 0f); // Hide icon completely
+                if (countText != null) countText.text = ItemCount > 1 ? ItemCount.ToString() : "";
+                return; // Exit early - can't show icon
             }
             
             //  FIX: Set item icon with FULL OPACITY on top of background
@@ -444,7 +511,7 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
                 iconRect.SetAsLastSibling(); // Move to front of UI hierarchy
             }
             
-            countText.text = ItemCount > 1 ? ItemCount.ToString() : "";
+            if (countText != null) countText.text = ItemCount > 1 ? ItemCount.ToString() : "";
         
             //  CHEST FIX: Also update ChestInventorySlot quantityText if this is a chest slot
             ChestInventorySlot chestSlot = GetComponent<ChestInventorySlot>();
@@ -455,7 +522,7 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
                 Debug.Log($" Synced ChestInventorySlot count to {ItemCount} for {gameObject.name}");
             }
         
-            Debug.Log($" Set icon sprite to: {itemIcon.sprite?.name}, countText to: '{countText.text}', alpha: 1.0 (FULL OPACITY)");
+            Debug.Log($" Set icon sprite to: {itemIcon.sprite?.name}, countText to: '{countText?.text}', alpha: 1.0 (FULL OPACITY)");
         }
     }
     
@@ -496,10 +563,22 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
             return;
         }
         
-        // Check for right-click delete
+        // ⚔️ SIMPLIFIED: Right-click drops item to world (inventory/weapon slots)
+        // For stash/equipment slots, use legacy OnRightClick event for deletion
         if (eventData.button == PointerEventData.InputButton.Right)
         {
-            Debug.Log($"[UnifiedSlot] Right-click detected on {gameObject.name}");
+            Debug.Log($"[UnifiedSlot] Right-click detected on {gameObject.name} (isWeaponSlot: {isWeaponSlot}, isStashSlot: {isStashSlot}, isEquipmentSlot: {isEquipmentSlot})");
+            
+            // INVENTORY/WEAPON SLOTS: Drop to world as pickup
+            if (!isStashSlot && !isEquipmentSlot && !isForgeOutputSlot && !isForgeInputSlot)
+            {
+                Debug.Log($"[UnifiedSlot] 🌍 Right-click DROP TO WORLD from {gameObject.name} - item: {CurrentItem?.itemName}");
+                HandleDropToWorld(eventData);
+                return; // Item dropped, slot cleared
+            }
+            
+            // STASH/EQUIPMENT/FORGE SLOTS: Use legacy event (for deletion)
+            Debug.Log($"[UnifiedSlot] ⚠️ Right-click on special slot - firing OnRightClick event for external handler");
             OnRightClick?.Invoke(this);
             return;
         }
@@ -577,6 +656,74 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
                     }
                 }
                 
+                // WEAPON AUTO-EQUIP: Check if this is a weapon that should be auto-equipped
+                if (IsWeaponItem(CurrentItem) && !isWeaponSlot)
+                {
+                    Debug.Log($"[UnifiedSlot] ⚔️ WEAPON AUTO-EQUIP: Attempting to equip {CurrentItem?.itemName}");
+                    
+                    // Find the WeaponEquipmentManager
+                    WeaponEquipmentManager weaponManager = WeaponEquipmentManager.Instance;
+                    if (weaponManager != null && weaponManager.rightHandWeaponSlot != null)
+                    {
+                        UnifiedSlot weaponSlot = weaponManager.rightHandWeaponSlot;
+                        
+                        // Try to move weapon to equipment slot
+                        if (weaponSlot.IsEmpty)
+                        {
+                            // Simple transfer - weapon slot is empty
+                            weaponSlot.SetItem(CurrentItem, ItemCount, bypassValidation: true);
+                            ClearSlot();
+                            Debug.Log($"[UnifiedSlot] ✅ Weapon equipped to right hand slot!");
+                            return; // Exit early - weapon was equipped
+                        }
+                        else
+                        {
+                            // Swap - weapon slot has a weapon, swap them
+                            ChestItemData tempItem = weaponSlot.CurrentItem;
+                            int tempCount = weaponSlot.ItemCount;
+                            
+                            weaponSlot.SetItem(CurrentItem, ItemCount, bypassValidation: true);
+                            SetItem(tempItem, tempCount, bypassValidation: true);
+                            Debug.Log($"[UnifiedSlot] ✅ Weapon swapped with right hand slot!");
+                            return; // Exit early - weapons were swapped
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[UnifiedSlot] ⚠️ WeaponEquipmentManager or right hand slot not found! Cannot auto-equip weapon.");
+                    }
+                }
+                
+                // ✅ NEW: WEAPON AUTO-UNEQUIP: Check if this is a weapon slot being double-clicked to unequip
+                if (IsWeaponItem(CurrentItem) && isWeaponSlot)
+                {
+                    Debug.Log($"[UnifiedSlot] ⚔️ WEAPON AUTO-UNEQUIP: Attempting to unequip {CurrentItem?.itemName}");
+                    
+                    // Find the InventoryManager to get first available inventory slot
+                    InventoryManager inventoryManager = InventoryManager.Instance;
+                    if (inventoryManager != null)
+                    {
+                        // Try to find first empty inventory slot
+                        UnifiedSlot emptySlot = inventoryManager.GetFirstEmptySlot();
+                        if (emptySlot != null)
+                        {
+                            // Move weapon to empty inventory slot
+                            emptySlot.SetItem(CurrentItem, ItemCount, bypassValidation: true);
+                            ClearSlot();
+                            Debug.Log($"[UnifiedSlot] ✅ Weapon unequipped to inventory slot {emptySlot.gameObject.name}!");
+                            return; // Exit early - weapon was unequipped
+                        }
+                        else
+                        {
+                            Debug.LogWarning($"[UnifiedSlot] ⚠️ No empty inventory slots available to unequip weapon!");
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[UnifiedSlot] ⚠️ InventoryManager not found! Cannot auto-unequip weapon.");
+                    }
+                }
+                
                 // CRITICAL: Set transfer processing flag to prevent spam
                 _isProcessingTransfer = true;
                 _lastTransferTime = Time.time;
@@ -618,14 +765,15 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
     {
         if (IsEmpty) return;
         
-        // EQUIPMENT SLOT FIX: Prevent dragging items OUT of equipment slots (vest/backpack)
-        if (isEquipmentSlot)
+        // EQUIPMENT SLOT FIX: Prevent dragging items OUT of equipment slots (vest/backpack only)
+        // Weapon slots (isWeaponSlot) allow dragging out
+        if (isEquipmentSlot && !isWeaponSlot)
         {
             Debug.Log($"❌ EQUIPMENT: Cannot drag item out of equipment slot {gameObject.name} - equipment cannot be unequipped, only replaced");
             // CRITICAL: Ensure drag state is completely clean
             _draggedSlot = null;
             _draggedVisual = null;
-            return; // Block dragging from equipment slots
+            return; // Block dragging from vest/backpack equipment slots
         }
         
         // FORGE FIX: Prevent dragging preview items from forge output slots
@@ -711,6 +859,59 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
     /// </summary>
     public void OnEndDrag(PointerEventData eventData)
     {
+        // ⭐ IMPROVED: Multiple checks for drag-to-world detection
+        // This is called on the SOURCE slot (the one being dragged FROM)
+        bool draggedOutsideUI = false;
+        
+        // Check 1: No raycast hit (mouse over nothing)
+        if (eventData.pointerCurrentRaycast.gameObject == null)
+        {
+            draggedOutsideUI = true;
+            Debug.Log($"[UnifiedSlot] 🌍 Drag-to-world CHECK 1: No raycast hit");
+        }
+        
+        // Check 2: Raycast hit but not a UI element (hit world geometry)
+        if (!draggedOutsideUI && eventData.pointerCurrentRaycast.gameObject != null)
+        {
+            // Check if the hit object has a Canvas component or is a child of Canvas
+            Canvas hitCanvas = eventData.pointerCurrentRaycast.gameObject.GetComponentInParent<Canvas>();
+            if (hitCanvas == null)
+            {
+                draggedOutsideUI = true;
+                Debug.Log($"[UnifiedSlot] 🌍 Drag-to-world CHECK 2: Hit non-UI object ({eventData.pointerCurrentRaycast.gameObject.name})");
+            }
+        }
+        
+        // Check 3: Pointer is outside screen bounds (for safety)
+        if (!draggedOutsideUI)
+        {
+            Vector2 mousePos = eventData.position;
+            if (mousePos.x < 0 || mousePos.x > Screen.width || mousePos.y < 0 || mousePos.y > Screen.height)
+            {
+                draggedOutsideUI = true;
+                Debug.Log($"[UnifiedSlot] 🌍 Drag-to-world CHECK 3: Mouse outside screen bounds");
+            }
+        }
+        
+        // If dragged outside UI, drop to world
+        if (!IsEmpty && _draggedSlot == this && draggedOutsideUI)
+        {
+            // Item was dragged outside UI - drop it in the world
+            Debug.Log($"[UnifiedSlot] 🌍 ✅ CONFIRMED DRAG TO WORLD from {gameObject.name} - item: {CurrentItem?.itemName}");
+            HandleDropToWorld(eventData);
+            
+            // Early return - don't restore colors since slot will be cleared
+            _draggedSlot = null;
+            if (_draggedVisual != null)
+            {
+                Destroy(_draggedVisual);
+                _draggedVisual = null;
+            }
+            return;
+        }
+        
+        Debug.Log($"[UnifiedSlot] Drag ended normally (not to world) - draggedOutsideUI: {draggedOutsideUI}, isEmpty: {IsEmpty}, _draggedSlot==this: {_draggedSlot == this}");
+        
         // FORGE FIX: Don't restore color for forge output slots showing preview items
         if (!IsEmpty)
         {
@@ -784,6 +985,68 @@ public class UnifiedSlot : MonoBehaviour, IPointerClickHandler, IDragHandler, IB
         
         // Notify StashManager to handle the transfer/swap
         OnItemDropped?.Invoke(_draggedSlot, this);
+    }
+    
+    /// <summary>
+    /// Handle dropping item into the world (outside UI)
+    /// </summary>
+    private void HandleDropToWorld(PointerEventData eventData)
+    {
+        if (IsEmpty) return;
+        
+        // Get the item being dropped from THIS slot
+        ChestItemData itemToDrop = CurrentItem;
+        int countToDrop = ItemCount;
+        bool isWeapon = IsWeaponItem(itemToDrop);
+        
+        Debug.Log($"[UnifiedSlot] 🌍 Dropping {countToDrop}x {itemToDrop.itemName} to world from {gameObject.name} (isWeapon: {isWeapon}, isWeaponSlot: {isWeaponSlot})");
+        
+        // Find WorldItemDropper
+        Debug.Log($"[UnifiedSlot] 🔍 Searching for WorldItemDropper...");
+        WorldItemDropper dropper = FindFirstObjectByType<WorldItemDropper>();
+        if (dropper == null)
+        {
+            Debug.LogError("[UnifiedSlot] ❌❌❌ WorldItemDropper not found in scene! Cannot drop item to world.");
+            Debug.LogError("[UnifiedSlot] Please add a GameObject with WorldItemDropper component to your scene!");
+            return;
+        }
+        Debug.Log($"[UnifiedSlot] ✅ Found WorldItemDropper: {dropper.gameObject.name}");
+        
+        // Get player position for drop
+        Debug.Log($"[UnifiedSlot] 🔍 Searching for Player...");
+        GameObject player = GameObject.FindGameObjectWithTag("Player");
+        if (player == null)
+        {
+            Debug.LogError("[UnifiedSlot] ❌❌❌ Player not found! Cannot drop item to world.");
+            Debug.LogError("[UnifiedSlot] Ensure your player GameObject has the 'Player' tag!");
+            return;
+        }
+        Debug.Log($"[UnifiedSlot] ✅ Found Player: {player.name}");
+        
+        // Calculate drop position in front of player
+        Vector3 dropPosition = player.transform.position + player.transform.forward * 100f; // 100 units in front
+        Debug.Log($"[UnifiedSlot] 📍 Drop position calculated: {dropPosition}");
+        
+        // Drop the item using WorldItemDropper
+        Debug.Log($"[UnifiedSlot] 🎯 Calling WorldItemDropper.DropItem()...");
+        dropper.DropItem(itemToDrop, countToDrop, dropPosition);
+        Debug.Log($"[UnifiedSlot] ✅ WorldItemDropper.DropItem() completed!");
+        
+        // ✅ CRITICAL FIX: Clear slot BEFORE notifying listeners
+        // This ensures OnSlotChanged event fires with correct state (empty slot)
+        ChestItemData droppedItem = CurrentItem; // Save reference before clearing
+        ClearSlot(); // This triggers OnSlotChanged event
+        
+        // ✅ NEW: If this was a weapon slot, explicitly notify WeaponEquipmentManager
+        // This ensures PlayerShooterOrchestrator gets updated immediately
+        if (isWeaponSlot && isWeapon)
+        {
+            Debug.Log($"[UnifiedSlot] ⚔️ Weapon dropped from weapon slot - WeaponEquipmentManager will auto-update via OnSlotChanged event");
+            // NOTE: No need to manually notify - ClearSlot() already fired OnSlotChanged event
+            // WeaponEquipmentManager listens to that event and updates PlayerShooterOrchestrator
+        }
+        
+        Debug.Log($"[UnifiedSlot] ✅ Dropped {countToDrop}x {droppedItem.itemName} to world at {dropPosition}");
     }
     
     // === CHEST INTERACTION METHODS ===

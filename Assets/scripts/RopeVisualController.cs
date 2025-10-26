@@ -197,47 +197,34 @@ public class RopeVisualController : MonoBehaviour
         }
         
         // Get rope start/end positions
-        // CRITICAL FIX: Use playerPosition parameter (character center), NOT transform.position (feet)!
-        // This prevents the ground beam bug for  320-unit characters
-        Vector3 startPos = useHandEmitPoint && handEmitPoint != null ? handEmitPoint.position : playerPosition;
+        // ALWAYS use player center position (passed parameter) for consistency
+        Vector3 startPos = playerPosition;
         Vector3 endPos = anchor;
         
-        // === TENSION-BASED SAG CALCULATION (SPIDER-MAN STYLE) ===
-        // tensionScalar: 0 = completely slack, 1 = maximum tension
-        // Only apply sag when rope is actually slack!
-        float effectiveSag = 0f;
+        // === PERFECT ROPE RENDERING - NO BULLSHIT ===
+        // Simple rule: Tension >= 0.1 = STRAIGHT LINE, Tension < 0.1 = slight sag
+        // This eliminates the "two ropes" visual bug
         
-        // Calculate energy normalized for effects (used for sag and visual effects)
         float energyNormalized = Mathf.Clamp01(swingEnergy / maxEnergyThreshold);
         
-        if (tensionScalar < 0.1f)
-        {
-            // Rope is slack - full catenary sag
-            effectiveSag = sagAmount;
-        }
-        else if (tensionScalar < 0.5f)
-        {
-            // Rope is under light tension - reduced sag
-            effectiveSag = sagAmount * (1f - tensionScalar * 2f);
-        }
-        // else: Rope is taut (tension >= 0.5) - NO sag, perfectly straight!
+        // ULTRA-AGGRESSIVE tension threshold: rope is straight unless COMPLETELY slack
+        float effectiveSag = tensionScalar < 0.05f ? sagAmount * 0.3f : 0f;
         
-        // Dynamic sag based on energy (for visual polish)
-        if (dynamicSag && effectiveSag > 0f)
+        // Update rope - straight line or minimal curve
+        if (effectiveSag > 0.001f && enableCurve && lineRenderer.positionCount > 2)
         {
-            effectiveSag *= Mathf.Lerp(1f, 0.3f, energyNormalized);
-        }
-        
-        // Update rope curve with SINGLE sag calculation
-        if (enableCurve && lineRenderer.positionCount > 2)
-        {
+            // Minimal curve (barely noticeable sag)
             UpdateCurvedRope_Fixed(startPos, endPos, effectiveSag, energyNormalized);
         }
         else
         {
-            // Simple straight line (no sag)
-            lineRenderer.SetPosition(0, startPos);
-            lineRenderer.SetPosition(1, Vector3.Lerp(startPos, endPos, animationProgress));
+            // STRAIGHT LINE (99% of the time this is what we want!)
+            for (int i = 0; i < lineRenderer.positionCount; i++)
+            {
+                float t = i / (float)(lineRenderer.positionCount - 1);
+                t *= animationProgress; // Apply shoot-out animation
+                lineRenderer.SetPosition(i, Vector3.Lerp(startPos, endPos, t));
+            }
         }
         
         // Update visual effects based on tension
@@ -246,14 +233,12 @@ public class RopeVisualController : MonoBehaviour
         // Update particle positions if enabled
         if (ropeTrailParticles != null)
         {
-            float ropeLength = Vector3.Distance(startPos, endPos);
             for (int i = 0; i < ropeTrailParticles.Length; i++)
             {
                 if (ropeTrailParticles[i] != null)
                 {
                     float t = (i + 1f) / (ropeTrailParticles.Length + 1f);
-                    Vector3 particlePos = GetCurvePoint_Fixed(startPos, endPos, t, effectiveSag, ropeLength);
-                    ropeTrailParticles[i].transform.position = particlePos;
+                    ropeTrailParticles[i].transform.position = Vector3.Lerp(startPos, endPos, t);
                 }
             }
         }
@@ -263,59 +248,21 @@ public class RopeVisualController : MonoBehaviour
     {
         float ropeLength = Vector3.Distance(start, end);
         
-        // GRAPPLE MODE OVERRIDE: When tension = 1.0, rope is perfectly straight!
-        // This happens when tensionScalar >= 1.0 (ultra-taut grapple)
-        bool isTaut = sagAmount < 0.001f; // Effectively zero sag
-        
-        if (isTaut)
+        // Generate minimal curve (barely visible sag)
+        for (int i = 0; i < lineRenderer.positionCount; i++)
         {
-            // Straight line for grapple mode (no curve calculation needed)
-            for (int i = 0; i < lineRenderer.positionCount; i++)
-            {
-                float t = i / (float)(lineRenderer.positionCount - 1);
-                t *= animationProgress; // Apply shoot-out animation
-                lineRenderer.SetPosition(i, Vector3.Lerp(start, end, t));
-            }
+            float t = i / (float)(lineRenderer.positionCount - 1);
+            t *= animationProgress; // Apply shoot-out animation
+            
+            // Linear interpolation with tiny sag in middle
+            Vector3 linearPoint = Vector3.Lerp(start, end, t);
+            
+            // Minimal downward sag (parabola peaks at middle)
+            float catenaryFactor = 4f * t * (1f - t);
+            float sagDistance = ropeLength * sagAmount * catenaryFactor;
+            
+            lineRenderer.SetPosition(i, linearPoint + Vector3.down * sagDistance);
         }
-        else
-        {
-            // Generate curve with SINGLE sag application
-            for (int i = 0; i < lineRenderer.positionCount; i++)
-            {
-                float t = i / (float)(lineRenderer.positionCount - 1);
-                t *= animationProgress; // Apply shoot-out animation
-                
-                // Get curve point with sag applied ONCE
-                Vector3 finalPosition = GetCurvePoint_Fixed(start, end, t, sagAmount, ropeLength);
-                
-                lineRenderer.SetPosition(i, finalPosition);
-            }
-        }
-    }
-    
-    Vector3 GetCurvePoint_Fixed(Vector3 start, Vector3 end, float t, float sagAmount, float ropeLength)
-    {
-        // Linear interpolation along rope
-        Vector3 linearPoint = Vector3.Lerp(start, end, t);
-        
-        // Calculate sag direction (always downward, but perpendicular to rope if vertical)
-        Vector3 ropeDirection = (end - start).normalized;
-        Vector3 sagDirection = Vector3.down;
-        
-        // If rope is nearly vertical, use perpendicular horizontal direction
-        if (Mathf.Abs(Vector3.Dot(ropeDirection, Vector3.up)) > 0.9f)
-        {
-            sagDirection = Vector3.Cross(ropeDirection, Vector3.right);
-            if (sagDirection.magnitude < 0.1f) sagDirection = Vector3.Cross(ropeDirection, Vector3.forward);
-            sagDirection.Normalize();
-        }
-        
-        // Catenary sag (parabola: peaks at middle, zero at ends)
-        float catenaryFactor = 4f * t * (1f - t); // Parabola: f(0)=0, f(0.5)=1, f(1)=0
-        float sagDistance = ropeLength * sagAmount * catenaryFactor;
-        
-        // Apply sag ONCE
-        return linearPoint + sagDirection * sagDistance;
     }
     
     void UpdateRopeEffects(float energyNormalized, float tensionScalar)

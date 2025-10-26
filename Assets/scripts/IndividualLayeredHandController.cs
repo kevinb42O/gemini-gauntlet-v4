@@ -60,11 +60,6 @@ public class IndividualLayeredHandController : MonoBehaviour
     // === PROPERTIES ===
     public bool IsLeftHand => isLeftHand;
    
-    
-    // Sprint direction tracking
-    private SprintDirection _currentSprintDirection = SprintDirection.Forward;
-    public SprintDirection CurrentSprintDirection => _currentSprintDirection;
-    
     // === ANIMATION STATES ===
     public enum MovementState
     {
@@ -83,21 +78,6 @@ public class IndividualLayeredHandController : MonoBehaviour
         FlyStrafeRight = 12,
         FlyBoost = 13,
         Falling = 14  // Falling animation - can be overridden by shooting layer
-    }
-    
-    /// <summary>
-    /// Sprint direction for hand-specific animations
-    /// </summary>
-    public enum SprintDirection
-    {
-        Forward = 0,        // W key dominant - both hands normal sprint
-        StrafeLeft = 1,     // A key dominant - LEFT hand emphasized animation
-        StrafeRight = 2,    // D key dominant - RIGHT hand emphasized animation
-        Backward = 3,       // S key dominant - both hands backward sprint
-        ForwardLeft = 4,    // W+A diagonal
-        ForwardRight = 5,   // W+D diagonal
-        BackwardLeft = 6,   // S+A diagonal
-        BackwardRight = 7   // S+D diagonal
     }
     
     public enum ShootingState
@@ -131,19 +111,18 @@ public class IndividualLayeredHandController : MonoBehaviour
     public EmoteState CurrentEmoteState { get; private set; } = EmoteState.None;
     public AbilityState CurrentAbilityState { get; private set; } = AbilityState.None;
     
-    // === SPRINT CONTINUITY SYSTEM ===
-    // Each hand remembers its sprint position and continues from where it would have been!
-    private float _savedSprintTime = 0f;        // Where hand was in sprint cycle when interrupted
-    private float _interruptionStartTime = 0f;  // When the interruption started
-    private float _sprintAnimationLength = 2f;  // Sprint animation duration (will be calculated)
-    
-    // Reference to opposite hand (for future features)
+    // Reference to opposite hand (for optional sync features if needed in future)
     public IndividualLayeredHandController oppositeHand { get; set; }
     
     // Coroutine references for proper cleanup
     private Coroutine _resetShootingCoroutine = null;
     private Coroutine _emoteMonitorCoroutine = null;
-    private Coroutine _restoreSprintCoroutine = null;
+    
+    // Sprint animation speed tracking
+    private AAAMovementController _movementController;
+    private float _targetAnimatorSpeed = 1.0f;
+    private float _currentAnimatorSpeed = 1.0f;
+    [SerializeField] private float animatorSpeedSmoothTime = 0.1f; // Smooth speed transitions
     
     void Awake()
     {
@@ -156,6 +135,13 @@ public class IndividualLayeredHandController : MonoBehaviour
         {
             // Try finding in scene if not in parent hierarchy
             _stateManager = FindObjectOfType<PlayerAnimationStateManager>();
+        }
+        
+        // Find movement controller for sprint speed sync
+        _movementController = GetComponentInParent<AAAMovementController>();
+        if (_movementController == null)
+        {
+            _movementController = FindObjectOfType<AAAMovementController>();
         }
         
         // Auto-find SoundEvents if not assigned
@@ -171,8 +157,6 @@ public class IndividualLayeredHandController : MonoBehaviour
     
     void Start()
     {
-        // Sprint sync system ready - hands will start synchronized and stay synchronized
-        
         // CRITICAL FIX: Initialize animator layer weights to match code state
         // This prevents left hand from appearing in shooting animation at start
         InitializeLayerWeights();
@@ -222,6 +206,33 @@ public class IndividualLayeredHandController : MonoBehaviour
                 UpdateLayerWeights();
             }
         }
+        
+        // 🚀 SMOOTH SPRINT ANIMATION SPEED SYNC
+        // Update animator speed smoothly based on current movement state
+        if (CurrentMovementState == MovementState.Sprint && _movementController != null)
+        {
+            // Get normalized sprint speed from movement controller (0.0 = walk, 1.0 = full sprint)
+            float normalizedSpeed = _movementController.NormalizedSprintSpeed;
+            
+            // Map to animation speed range (0.7 = slow start, 1.3 = faster at full sprint!)
+            _targetAnimatorSpeed = Mathf.Lerp(0.7f, 1.3f, normalizedSpeed);
+        }
+        else
+        {
+            // Non-sprint states use normal speed
+            _targetAnimatorSpeed = 1.0f;
+        }
+        
+        // Smooth transition to target speed (prevents jittery changes)
+        if (Mathf.Abs(_currentAnimatorSpeed - _targetAnimatorSpeed) > 0.001f)
+        {
+            _currentAnimatorSpeed = Mathf.Lerp(_currentAnimatorSpeed, _targetAnimatorSpeed, Time.deltaTime / animatorSpeedSmoothTime);
+            
+            if (handAnimator != null)
+            {
+                handAnimator.speed = _currentAnimatorSpeed;
+            }
+        }
         // With blending disabled, no Update() work needed at all!
     }
     
@@ -234,7 +245,6 @@ public class IndividualLayeredHandController : MonoBehaviour
         // Stop all running coroutines to prevent errors
         if (_resetShootingCoroutine != null) StopCoroutine(_resetShootingCoroutine);
         if (_emoteMonitorCoroutine != null) StopCoroutine(_emoteMonitorCoroutine);
-        if (_restoreSprintCoroutine != null) StopCoroutine(_restoreSprintCoroutine);
     }
     
     void OnDisable()
@@ -242,7 +252,6 @@ public class IndividualLayeredHandController : MonoBehaviour
         // Also cleanup on disable (when hand is deactivated)
         if (_resetShootingCoroutine != null) StopCoroutine(_resetShootingCoroutine);
         if (_emoteMonitorCoroutine != null) StopCoroutine(_emoteMonitorCoroutine);
-        if (_restoreSprintCoroutine != null) StopCoroutine(_restoreSprintCoroutine);
     }
     
     /// <summary>
@@ -362,28 +371,11 @@ public class IndividualLayeredHandController : MonoBehaviour
     // === MOVEMENT ANIMATIONS (Base Layer) ===
     
     /// <summary>
-    /// Set movement state with optional sprint direction for directional hand animations
+    /// Set movement state - simple unified sprint animation (no direction variants)
+    /// Animation speed for sprints is automatically synced via Update() loop
     /// </summary>
-    public void SetMovementState(MovementState newState, SprintDirection sprintDirection = SprintDirection.Forward)
+    public void SetMovementState(MovementState newState)
     {
-        // 🎯 DIRECTIONAL SPRINT: Store direction for animator
-        if (newState == MovementState.Sprint)
-        {
-            _currentSprintDirection = sprintDirection;
-            
-            // 🎨 SMART HAND-SPECIFIC ANIMATION SELECTION
-            // This is where the magic happens - each hand responds differently based on strafe direction!
-            int animDirection = DetermineHandSpecificSprintAnimation(sprintDirection);
-            
-            if (handAnimator != null)
-            {
-                handAnimator.SetInteger("sprintDirection", animDirection);
-                
-                if (enableDebugLogs)
-                    Debug.Log($"[{name}] 🏃 {(isLeftHand ? "LEFT" : "RIGHT")} hand sprint: {sprintDirection} -> animation direction: {animDirection}");
-            }
-        }
-        
         // 🎯 JUMP ALTERNATION: Handle BEFORE early return check!
         // Jump needs to toggle even if we're "already" in jump state
         if (newState == MovementState.Jump)
@@ -420,86 +412,15 @@ public class IndividualLayeredHandController : MonoBehaviour
         // BUT we already handled jump toggle above!
         if (CurrentMovementState == newState)
         {
-            return; // CRITICAL: No debug spam, just silently skip
-        }
-        
-        // 🎯 CRITICAL: Detect state transitions
-        bool wasInSprint = (CurrentMovementState == MovementState.Sprint);
-        bool nowInSprint = (newState == MovementState.Sprint);
-        bool leavingSprint = wasInSprint && !nowInSprint;
-        bool returningToSprint = !wasInSprint && nowInSprint;
-        
-        
-        // 💾 SAVE sprint position when LEAVING sprint (ONLY for movement state changes like Jump)
-        if (leavingSprint)
-        {
-            SaveSprintPosition();
+            return; // CRITICAL: Already in this state, skip
         }
         
         CurrentMovementState = newState;
         
         if (handAnimator != null)
         {
+            // Simple and clean - let Unity's Animator state machine handle all transitions
             handAnimator.SetInteger("movementState", (int)newState);
-            
-            // ↩️ RESTORE sprint continuity when RETURNING to sprint
-            if (returningToSprint)
-            {
-                // Wait one frame to let animator transition complete, THEN restore position
-                // Store coroutine reference for cleanup
-                _restoreSprintCoroutine = StartCoroutine(RestoreSprintAfterFrame());
-            }
-        }
-    }
-    
-    /// <summary>
-    /// 🎨 BRILLIANT HAND-SPECIFIC SPRINT ANIMATION LOGIC
-    /// LEFT hand gets emphasized animation when strafing LEFT
-    /// RIGHT hand gets emphasized animation when strafing RIGHT
-    /// BOTH hands use special animation when sprinting BACKWARD
-    /// Returns animator-friendly integer for animation selection
-    /// </summary>
-    private int DetermineHandSpecificSprintAnimation(SprintDirection direction)
-    {
-        // 0 = Normal sprint (forward)
-        // 1 = Emphasized sprint (this hand is leading the strafe)
-        // 2 = Subdued sprint (opposite hand during strafe)
-        // 3 = Backward sprint (special animation for both hands)
-        
-        switch (direction)
-        {
-            case SprintDirection.Forward:
-                return 0; // Both hands: normal forward sprint
-                
-            case SprintDirection.StrafeLeft:
-                // LEFT hand emphasized, RIGHT hand subdued
-                return isLeftHand ? 1 : 2;
-                
-            case SprintDirection.StrafeRight:
-                // RIGHT hand emphasized, LEFT hand subdued
-                return isLeftHand ? 2 : 1;
-                
-            case SprintDirection.Backward:
-                return 3; // Both hands: backward sprint animation
-                
-            case SprintDirection.ForwardLeft:
-                // Diagonal W+A: LEFT hand slightly emphasized
-                return isLeftHand ? 1 : 0;
-                
-            case SprintDirection.ForwardRight:
-                // Diagonal W+D: RIGHT hand slightly emphasized
-                return isLeftHand ? 0 : 1;
-                
-            case SprintDirection.BackwardLeft:
-                // Diagonal S+A: Backward animation with left emphasis
-                return 3; // Use backward for now (can add variation later)
-                
-            case SprintDirection.BackwardRight:
-                // Diagonal S+D: Backward animation with right emphasis
-                return 3; // Use backward for now (can add variation later)
-                
-            default:
-                return 0; // Fallback to normal sprint
         }
     }
     
@@ -626,6 +547,10 @@ public class IndividualLayeredHandController : MonoBehaviour
         {
             handAnimator.SetBool("IsBeamAc", false);
         }
+        
+        // 🔧 CRITICAL FIX: Reset base layer idle animation to start from beginning
+        // This prevents the "snap down" effect when shooting layer weight goes to 0
+        ResetBaseLayerToIdle();
         
         // CRITICAL: Notify state manager that beam shooting stopped
         if (_stateManager != null)
@@ -875,6 +800,10 @@ public class IndividualLayeredHandController : MonoBehaviour
             handAnimator.SetLayerWeight(SHOOTING_LAYER, 0f);
         }
         
+        // 🔧 CRITICAL FIX: Reset base layer idle animation to start from beginning
+        // This prevents the "snap down" effect when shooting layer weight goes to 0
+        ResetBaseLayerToIdle();
+        
         // Wait 2 frames for animator to fully process the weight change
         // This ensures the shooting layer is completely invisible before next shot
         yield return null;
@@ -950,6 +879,10 @@ public class IndividualLayeredHandController : MonoBehaviour
         {
             handAnimator.SetLayerWeight(SHOOTING_LAYER, 0f);
         }
+        
+        // 🔧 CRITICAL FIX: Reset base layer idle animation to start from beginning
+        // This prevents the "snap down" effect when shooting layer weight goes to 0
+        ResetBaseLayerToIdle();
         
         yield return null;
         yield return null;
@@ -1294,6 +1227,42 @@ public class IndividualLayeredHandController : MonoBehaviour
     
     // === UTILITY METHODS ===
     
+    /// <summary>
+    /// 🔧 CRITICAL FIX: Reset base layer to idle animation from the beginning
+    /// This prevents the "snap down" effect when overlay layers (shooting/emote/ability) end
+    /// The base layer was playing in the background - we need to restart it from frame 0
+    /// </summary>
+    private void ResetBaseLayerToIdle()
+    {
+        if (handAnimator == null) return;
+        
+        // Force base layer back to idle state at normalized time 0 (start of animation)
+        // This ensures smooth transition when shooting/emote/ability layer weight drops to 0
+        if (CurrentMovementState == MovementState.Idle)
+        {
+            // Get the current state info to find what state we're in
+            AnimatorStateInfo currentState = handAnimator.GetCurrentAnimatorStateInfo(BASE_LAYER);
+            
+            // Replay the current state (idle) from the beginning
+            // This works with animator parameters - we just reset the playback position
+            handAnimator.Play(currentState.fullPathHash, BASE_LAYER, 0f);
+            
+            if (enableDebugLogs)
+            {
+                Debug.Log($"[{name}] ✅ Reset base layer idle animation to start (normalizedTime = 0)");
+            }
+        }
+        else
+        {
+            // If we're not in idle (e.g., walking, sprinting), the base layer animation should continue naturally
+            // Don't reset it - just let the current movement animation play
+            if (enableDebugLogs)
+            {
+                Debug.Log($"[{name}] ℹ️ Not resetting base layer - current movement state is {CurrentMovementState}, not Idle");
+            }
+        }
+    }
+    
     public void SetAnimationSpeed(float speed)
     {
         if (handAnimator != null)
@@ -1321,100 +1290,15 @@ public class IndividualLayeredHandController : MonoBehaviour
             // Reset other parameters as needed
         }
         
+        // 🔧 CRITICAL FIX: Reset base layer idle animation to start from beginning
+        // This prevents the "snap down" effect when all overlay layers are force-stopped
+        ResetBaseLayerToIdle();
+        
         // Clear coroutine reference before stopping all
         _resetShootingCoroutine = null;
         
         // Stop all running coroutines
         StopAllCoroutines();
-    }
-    
-    // === SPRINT CONTINUITY METHODS ===
-    
-    /// <summary>
-    /// Save current sprint position when hand gets interrupted (shooting/emote/ability)
-    /// </summary>
-    private void SaveSprintPosition()
-    {
-        if (handAnimator == null) return;
-        
-        try
-        {
-            AnimatorStateInfo baseState = handAnimator.GetCurrentAnimatorStateInfo(BASE_LAYER);
-            _savedSprintTime = baseState.normalizedTime % 1f;  // Save normalized position (0-1)
-            _interruptionStartTime = Time.time;                  // Save when interruption started
-            _sprintAnimationLength = Mathf.Max(baseState.length, 0.1f);  // Save animation length (min 0.1s to prevent division by zero)
-        }
-        catch (System.Exception)
-        {
-            // Silently handle errors
-        }
-    }
-    
-    /// <summary>
-    /// Wait 0.3 seconds for sprint animation to stabilize, then restore position
-    /// PRAGMATIC SOLUTION: Let animation play naturally for a moment before syncing
-    /// </summary>
-    private System.Collections.IEnumerator RestoreSprintAfterFrame()
-    {
-        // 🎯 SIMPLE FIX: Wait 0.3 seconds for sprint animation to stabilize
-        yield return new UnityEngine.WaitForSeconds(0.3f);
-        
-        // Clear coroutine reference when done
-        _restoreSprintCoroutine = null;
-
-        if (CurrentMovementState != MovementState.Sprint) yield break;
-        if (handAnimator == null) yield break;
-
-        try
-        {
-            // 🎯 PRIORITY #1: If opposite hand is already sprinting, ALWAYS sync to it!
-            if (oppositeHand != null &&
-                oppositeHand.CurrentMovementState == MovementState.Sprint &&
-                oppositeHand.handAnimator != null)
-            {
-                AnimatorStateInfo oppositeState = oppositeHand.handAnimator.GetCurrentAnimatorStateInfo(BASE_LAYER);
-
-                // CRITICAL: Check if opposite hand is actually IN sprint animation
-                if (oppositeState.IsName("Sprint") || oppositeState.IsName("R_run") || oppositeState.IsName("L_run"))
-                {
-                    float oppositeTime = oppositeState.normalizedTime % 1f;
-                    
-                    // Force immediate sync to opposite hand's position - use correct state name for each hand
-                    string targetState = isLeftHand ? "L_run" : "R_run";
-                    handAnimator.Play(targetState, BASE_LAYER, oppositeTime);
-                    handAnimator.Update(0f); // Force immediate update
-                    yield break;
-                }
-            }
-
-            // PRIORITY #2: If both hands are transitioning to sprint (like after jump), sync them together
-            if (oppositeHand != null && oppositeHand.CurrentMovementState == MovementState.Sprint)
-            {
-                // Both hands are transitioning to sprint - sync them to start at same time
-                float syncedTime = 0.5f; // Start at middle of sprint cycle for natural look
-
-                string targetState = isLeftHand ? "L_run" : "R_run";
-                handAnimator.Play(targetState, BASE_LAYER, syncedTime);
-                handAnimator.Update(0f);
-                yield break;
-            }
-
-            // PRIORITY #3: Use continuity calculation if opposite hand not available
-            float timeElapsed = Time.time - _interruptionStartTime;
-            float progressionRate = 1f / Mathf.Max(_sprintAnimationLength, 0.1f);
-            float virtualProgress = timeElapsed * progressionRate;
-            float resumeTime = (_savedSprintTime + virtualProgress) % 1f;
-
-            string fallbackState = isLeftHand ? "L_run" : "R_run";
-            handAnimator.Play(fallbackState, BASE_LAYER, resumeTime);
-            handAnimator.Update(0f); // Force immediate update
-        }
-        catch (System.Exception)
-        {
-            // Silently handle errors
-            string errorState = isLeftHand ? "L_run" : "R_run";
-            handAnimator.Play(errorState, BASE_LAYER, 0f);
-        }
     }
     
     // === DEBUG METHODS ===

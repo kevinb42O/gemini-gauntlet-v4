@@ -84,6 +84,13 @@ public class ChestController : MonoBehaviour
     [Range(1, 3)]
     public int selfReviveCount = 1;
     
+    [Header("Sword Item Spawning")]
+    [Tooltip("Sword weapon item data to spawn in chest")]
+    public EquippableWeaponItemData swordItemData;
+    [Tooltip("Chance (0-100%) for sword to spawn in this chest")]
+    [Range(0f, 100f)]
+    public float swordSpawnChance = 10f; // 10% spawn rate (Epic rarity)
+    
     [Header("Effects")]
     [Tooltip("Particle effect when chest emerges")]
     public GameObject emergenceEffectPrefab;
@@ -133,26 +140,18 @@ public class ChestController : MonoBehaviour
             chestSoundManager = gameObject.AddComponent<ChestSoundManager>();
             DebugLog($"[ChestController] ✅ Added ChestSoundManager to {gameObject.name}");
         }
-        else
-        {
-            DebugLog($"[ChestController] ✅ Found existing ChestSoundManager on {gameObject.name}");
-        }
         
         // Configure chest based on type
         ConfigureChestType();
-        
-        // NOTE: Don't try to find parent platform here - it may not be set yet during instantiation
-        // The ChestManager will call SetPlatformAssociation() after parenting is complete
         
         // Set up positions and rotations (will be updated when platform is assigned)
         SetupChestPositions();
         
         // Start in appropriate state based on chest type
-        // NOTE: Don't start humming in Awake - SoundEventsManager may not be ready yet
         if (chestType == ChestType.Manual)
         {
             // Manual chests start visible and closed (ready for interaction)
-            // Set state without triggering sound (will be triggered in Start())
+            // Humming will be started in Start() when sound system is fully initialized
             currentState = ChestState.Closed;
             SetChestVisibility(true);
             DebugLog($"[ChestController] Manual chest '{name}' starting in CLOSED state (will start humming in Start())");
@@ -185,18 +184,20 @@ public class ChestController : MonoBehaviour
     
     void Start()
     {
-        // Runtime spawned chests don't need initial tower completion checks
-        // ChestManager handles all tower monitoring and spawning logic
+        // Set up chest positions (ensures proper placement)
         SetupChestPositions();
         
-        // Additional setup for manual chests
+        // Start humming for manual chests NOW that sound system is initialized
         if (chestType == ChestType.Manual && currentState == ChestState.Closed)
         {
-            // NOW start humming - SoundEventsManager should be initialized by now
             if (chestSoundManager != null)
             {
                 DebugLog($"[ChestController] 🎵 Starting humming for manual chest '{name}' in Start()");
                 chestSoundManager.StartChestHumming();
+            }
+            else
+            {
+                Debug.LogError($"[ChestController] ❌ ChestSoundManager is NULL on manual chest '{name}'!");
             }
             DebugLog($"Manual chest '{name}' initialized and ready for interaction");
         }
@@ -375,6 +376,9 @@ public class ChestController : MonoBehaviour
         }
         
         SetChestState(ChestState.Open);
+        
+        // Spawn sword items (10% chance for Epic rarity)
+        SpawnSwordItem();
         
         // Spawn gems if configured to do so (works for both Manual and Spawned chests)
         if (shouldSpawnGems && !hasSpawnedGems)
@@ -676,6 +680,33 @@ public class ChestController : MonoBehaviour
             }
         }
         
+    }
+    
+    /// <summary>
+    /// Attempt to spawn sword item in chest based on spawn chance
+    /// Called during chest opening
+    /// </summary>
+    private void SpawnSwordItem()
+    {
+        if (swordItemData == null) return;
+        
+        // Roll spawn chance
+        float roll = Random.Range(0f, 100f);
+        if (roll > swordSpawnChance) return; // Failed spawn roll
+        
+        // Spawn sword in chest
+        InventoryManager inventoryManager = InventoryManager.Instance;
+        if (inventoryManager != null && inventoryManager.TryAddItem(swordItemData, 1))
+        {
+            Debug.Log($"📦 ChestController: Spawned {swordItemData.itemName} in chest! (Roll: {roll:F1}% < {swordSpawnChance}%)");
+            
+            // Optional: Visual effect or sound
+            if (gemSpawnEffectPrefab != null)
+            {
+                Vector3 spawnPos = transform.position + Vector3.up * gemSpawnHeight;
+                Instantiate(gemSpawnEffectPrefab, spawnPos, Quaternion.identity);
+            }
+        }
     }
     
     private void SetChestState(ChestState newState)

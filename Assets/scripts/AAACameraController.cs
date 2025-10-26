@@ -39,10 +39,10 @@ public class AAACameraController : MonoBehaviour
     [SerializeField] private float sprintBobFrequency = 2.0f; // Slower sprint for large character
     [Tooltip("Velocity influence on bob intensity (0-1)")]
     [SerializeField] [Range(0f, 1f)] private float velocityInfluence = 0.4f; // Lower for smoother feel
-    [Tooltip("Smoothness of bob transitions")]
-    [SerializeField] private float headBobSmoothness = 5f; // Very smooth for large character
-    [Tooltip("Footstep impact sharpness (higher = more pronounced steps)")]
-    [SerializeField] private float footstepSharpness = 1.3f; // Softer for heavy character feel
+    [Tooltip("Smoothness of bob transitions (higher = smoother)")]
+    [SerializeField] private float headBobSmoothness = 8f; // Increased for butter-smooth transitions
+    [Tooltip("Footstep impact sharpness (1.0 = pure sine, higher = sharper steps)")]
+    [SerializeField] private float footstepSharpness = 0.7f; // Lower = smoother, less snappy steps
     [Tooltip("Enable subtle head tilt on steps (realistic weight distribution)")]
     [SerializeField] private bool enableStepTilt = true;
     [Tooltip("Maximum tilt angle per step (degrees)")]
@@ -267,6 +267,9 @@ public class AAACameraController : MonoBehaviour
     private float yawStart;
     private Vector3 referenceUp;
     
+    // 🔥 CRITICAL FIX: Store base local position to prevent drift
+    private Vector3 baseLocalPosition = Vector3.zero;
+    
     // Look rotation
     private Vector2 currentLook;
     private Vector2 targetLook;
@@ -444,6 +447,10 @@ public class AAACameraController : MonoBehaviour
         movementController = GetComponentInParent<AAAMovementController>();
         playerTransform = transform.parent;
         
+        // 🔥 CRITICAL FIX: Store base local position for consistent offset application
+        baseLocalPosition = transform.localPosition;
+        Debug.Log($"[AAACameraController] Base local position stored: {baseLocalPosition}");
+        
         // Initialize values
         currentFOV = baseFOV;
         targetFOV = baseFOV;
@@ -494,6 +501,9 @@ public class AAACameraController : MonoBehaviour
         // Ensure references
         if (playerCamera == null) playerCamera = GetComponent<Camera>();
         if (playerTransform == null) playerTransform = transform.parent;
+        
+        // 🔥 CRITICAL FIX: Store base local position when enabled
+        baseLocalPosition = transform.localPosition;
         
         // 🔥 CRITICAL FIX: Restore FOV when re-enabled (prevents FOV reset when chest opens/closes)
         if (playerCamera != null && storedFOVBeforeDisable > 0)
@@ -982,15 +992,18 @@ public class AAACameraController : MonoBehaviour
             }
             lastStepPhase = stepPhase;
             
-            // === VERTICAL BOB (Compression on footstep) ===
-            // Sharp downward compression on footstep, smooth recovery
-            // Using power curve for realistic weight transfer
-            float verticalCurve = Mathf.Pow(Mathf.Sin(stepPhase * Mathf.PI), footstepSharpness);
+            // === VERTICAL BOB (Smooth compression/extension cycle) ===
+            // Smoother approach: blend pure sine with power curve for adjustable feel
+            // Pure sine (footstepSharpness = 1.0) = perfectly smooth
+            // Higher values = more pronounced steps (but still smooth)
+            float baseSineWave = Mathf.Sin(stepPhase * Mathf.PI);
+            float sharpenedWave = Mathf.Pow(baseSineWave, footstepSharpness);
+            float verticalCurve = Mathf.Lerp(baseSineWave, sharpenedWave, 0.5f); // Blend for best feel
             float verticalBob = -verticalCurve * headBobVerticalIntensity * velocityMultiplier * currentBobIntensity;
             
             // === HORIZONTAL SWAY (Minimal, realistic weight shift) ===
             // Very subtle side-to-side, synchronized with steps
-            // COD uses minimal horizontal movement compared to vertical
+            // Using smoothed sine for fluid motion
             float horizontalCurve = Mathf.Sin(stepPhase * Mathf.PI * 2f); // Full sine for smooth sway
             float horizontalBob = horizontalCurve * headBobHorizontalIntensity * velocityMultiplier * currentBobIntensity;
             
@@ -1465,12 +1478,9 @@ public class AAACameraController : MonoBehaviour
             totalOffset += predictedVelocity * Time.deltaTime * 0.1f; // Subtle prediction
         }
         
-        // Apply all offsets to current position
-        if (totalOffset.sqrMagnitude > 0.0001f)
-        {
-            Vector3 currentPos = transform.localPosition;
-            transform.localPosition = currentPos + totalOffset;
-        }
+        // 🔥 CRITICAL FIX: Always apply offset relative to BASE position, not current position
+        // This prevents drift/accumulation - camera height stays EXACTLY at base + offset
+        transform.localPosition = baseLocalPosition + totalOffset;
     }
     
     // Public methods for camera shake system

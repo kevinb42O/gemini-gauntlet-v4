@@ -1,6 +1,7 @@
 // --- PlayerShooterOrchestrator.cs (SIMPLIFIED - Event Driven) ---
 using UnityEngine;
 using GeminiGauntlet.Audio;
+using GeminiGauntlet.UI;
 using System.Collections;
 using System.Collections.Generic;
 
@@ -62,20 +63,48 @@ public class PlayerShooterOrchestrator : MonoBehaviour
     public bool HomingDaggersActive { get; private set; } = false;
     private Coroutine _homingDaggersCoroutine;
     
-    [Header("Sword Mode System")]
-    [Tooltip("Is sword mode currently active? (Right hand only)")]
+    [Header("Sword Mode System - RIGHT HAND")]
+    [Tooltip("Is RIGHT sword mode currently active?")]
     public bool IsSwordModeActive { get; private set; } = false;
-    [Tooltip("Sword damage script reference (assign the sword GameObject)")]
+    
+    [Tooltip("Is sword item currently equipped in RIGHT hand weapon slot? (gates mode activation)")]
+    private bool _isSwordAvailable = false;
+    
+    [Tooltip("RIGHT hand sword damage script reference (assign the sword GameObject)")]
     public SwordDamage swordDamage;
-    [Tooltip("Optional: Sword visual GameObject to show/hide when toggling modes")]
+    [Tooltip("Optional: RIGHT sword visual GameObject to show/hide when toggling modes")]
     public GameObject swordVisualGameObject;
-    [Tooltip("Tracks which sword attack to play next (1 or 2) - alternates automatically")]
+    [Tooltip("Tracks which RIGHT sword attack to play next (1 or 2) - alternates automatically")]
     private int _currentSwordAttackIndex = 1;
     
-    // Charged attack tracking
+    [Header("Sword Mode System - LEFT HAND")]
+    [Tooltip("Is LEFT sword mode currently active?")]
+    public bool IsLeftSwordModeActive { get; private set; } = false;
+    
+    [Tooltip("Is sword item currently equipped in LEFT hand weapon slot? (gates mode activation)")]
+    private bool _isLeftSwordAvailable = false;
+    
+    [Tooltip("LEFT hand sword damage script reference (assign the left sword GameObject)")]
+    public SwordDamage leftSwordDamage;
+    [Tooltip("Optional: LEFT sword visual GameObject to show/hide when toggling modes")]
+    public GameObject leftSwordVisualGameObject;
+    [Tooltip("Tracks which LEFT sword attack to play next (1 or 2) - alternates automatically")]
+    private int _currentLeftSwordAttackIndex = 1;
+    
+    // RIGHT HAND charged attack tracking
     private bool _isChargingSwordAttack = false;
     private float _swordChargeStartTime = 0f;
     private SoundHandle _swordChargeLoopHandle = SoundHandle.Invalid;
+    
+    // LEFT HAND charged attack tracking - mirror of RIGHT hand
+    private bool _isChargingLeftSwordAttack = false;
+    private float _leftSwordChargeStartTime = 0f;
+    private SoundHandle _leftSwordChargeLoopHandle = SoundHandle.Invalid;
+    
+    // ATTACK LOCKOUT: Prevent attacks immediately after equipping (let reveal animation play)
+    private float _rightSwordAttackLockoutUntil = -999f;  // Time until RIGHT sword can attack
+    private float _leftSwordAttackLockoutUntil = -999f;   // Time until LEFT sword can attack
+    private const float SWORD_EQUIP_LOCKOUT_DURATION = 1.0f; // 1 second lockout after equipping
     
     [Header("Homing Dagger Settings")]
     public GameObject homingDaggerPrefab; // Assign Dagger_Homing_ prefab in inspector
@@ -116,6 +145,9 @@ public class PlayerShooterOrchestrator : MonoBehaviour
     [Header("Animation System")]
     private LayeredHandAnimationController _layeredHandAnimationController;
     private PlayerAnimationStateManager _animationStateManager;
+    
+    // 🕷️ DUAL ROPE GRAPPLING INTEGRATION: Cache grappling system for shooting blockage checks
+    private AdvancedGrapplingSystem _grapplingSystem;
 
     void Awake()
     {
@@ -142,6 +174,9 @@ public class PlayerShooterOrchestrator : MonoBehaviour
         _layeredHandAnimationController = GetComponent<LayeredHandAnimationController>();
         _animationStateManager = GetComponent<PlayerAnimationStateManager>();
         
+        // 🕷️ DUAL ROPE GRAPPLING INTEGRATION: Cache grappling system for shooting blockage checks
+        _grapplingSystem = GetComponent<AdvancedGrapplingSystem>();
+        
         if (_layeredHandAnimationController == null)
         {
             Debug.LogWarning("[PlayerShooterOrchestrator] LayeredHandAnimationController not found! Hand animations will be skipped.", this);
@@ -151,6 +186,11 @@ public class PlayerShooterOrchestrator : MonoBehaviour
         {
             Debug.LogWarning("[PlayerShooterOrchestrator] PlayerAnimationStateManager not found! Using fallback animation system.", this);
         }
+        
+        if (_grapplingSystem == null)
+        {
+            Debug.LogWarning("[PlayerShooterOrchestrator] 🕷️ AdvancedGrapplingSystem not found! Rope-shooting blockage will be disabled.", this);
+        }
     }
 
     void Start()
@@ -159,6 +199,13 @@ public class PlayerShooterOrchestrator : MonoBehaviour
         Debug.Log($"[Debug] PlayerShooterOrchestrator position: {transform.position}");
         if (_cameraTransform != null) Debug.Log($"[Debug] Camera position: {_cameraTransform.position}");
         // --- END DEBUG LOGS ---
+        
+        // ⚔️ SWORD VISUAL INITIALIZATION: Ensure sword starts hidden
+        if (swordVisualGameObject != null)
+        {
+            swordVisualGameObject.SetActive(false);
+            Debug.Log("[PlayerShooterOrchestrator] ⚔️ Sword visual initialized as HIDDEN on start");
+        }
         
         // 🔊 DIAGNOSTIC: Verify 3D Audio Setup
         Debug.Log("=== 3D AUDIO DIAGNOSTIC ===", this);
@@ -280,10 +327,24 @@ public class PlayerShooterOrchestrator : MonoBehaviour
 
     void Update()
     {
-        // Toggle sword mode with Mouse4 (side button 1) - index 3
-        if (Input.GetMouseButtonDown(3))
+        // Sword toggle system: Hold Mouse4 (modifier) + click LMB/RMB
+        // Hold Mouse4 + click LMB = Toggle LEFT hand sword
+        // Hold Mouse4 + click RMB = Toggle RIGHT hand sword
+        bool holdingMouse4 = Input.GetMouseButton(3);
+        
+        if (holdingMouse4)
         {
-            ToggleSwordMode();
+            // Mouse4 is held - check for LMB/RMB clicks
+            if (Input.GetMouseButtonDown(0)) // LMB clicked while Mouse4 held
+            {
+                Debug.Log("[PlayerShooterOrchestrator] 🎮 Mouse4 + LMB: Toggle LEFT hand sword");
+                ToggleLeftSwordMode();
+            }
+            else if (Input.GetMouseButtonDown(1)) // RMB clicked while Mouse4 held
+            {
+                Debug.Log("[PlayerShooterOrchestrator] 🎮 Mouse4 + RMB: Toggle RIGHT hand sword");
+                ToggleSwordMode();
+            }
         }
     }
 
@@ -358,6 +419,27 @@ public class PlayerShooterOrchestrator : MonoBehaviour
 
     private void HandlePrimaryTap()
     {
+        // 🕷️ DUAL ROPE GRAPPLING: Block shooting if LEFT hand rope is active
+        if (_grapplingSystem != null && _grapplingSystem.IsLeftRopeActive)
+        {
+            Debug.Log("[PlayerShooterOrchestrator] 🕷️ Left hand shooting BLOCKED - rope active!");
+            return; // Exit early - left hand is using rope, not gun
+        }
+        
+        // ⚔️ CHECK LEFT SWORD MODE FIRST - if active, trigger sword attack instead of shooting
+        if (IsLeftSwordModeActive)
+        {
+            // 🔒 ATTACK LOCKOUT: Prevent attack during reveal animation (1 second after equipping)
+            if (Time.time < _leftSwordAttackLockoutUntil)
+            {
+                Debug.Log($"[LEFT SWORD] Attack locked - reveal animation playing ({_leftSwordAttackLockoutUntil - Time.time:F2}s remaining)");
+                return; // Exit early - lockout active, reveal animation still playing
+            }
+            
+            TriggerLeftSwordAttack();
+            return; // Exit early - no shooting in sword mode
+        }
+        
         if (overheatManager.IsHandOverheated(true)) return;
         
         // Normal shooting always happens regardless of powerups
@@ -413,6 +495,20 @@ public class PlayerShooterOrchestrator : MonoBehaviour
 
     private void HandlePrimaryHoldStarted()
     {
+        // 🕷️ DUAL ROPE GRAPPLING: Block beam shooting if LEFT hand rope is active
+        if (_grapplingSystem != null && _grapplingSystem.IsLeftRopeActive)
+        {
+            Debug.Log("[PlayerShooterOrchestrator] 🕷️ Left hand beam shooting BLOCKED - rope active!");
+            return; // Exit early - left hand is using rope, not gun
+        }
+        
+        // ⚔️ CHECK LEFT SWORD MODE FIRST - if active, start charging sword instead of beam
+        if (IsLeftSwordModeActive)
+        {
+            StartChargingLeftSwordAttack();
+            return; // Exit early - no beam in sword mode
+        }
+        
         if (overheatManager == null || primaryHandMechanics == null) return;
         
         if (overheatManager.IsHandOverheated(true)) return;
@@ -455,6 +551,13 @@ public class PlayerShooterOrchestrator : MonoBehaviour
 
     private void HandlePrimaryHoldEnded()
     {
+        // ⚔️ CHECK LEFT SWORD MODE FIRST - if active, release charged sword attack
+        if (IsLeftSwordModeActive)
+        {
+            ReleaseChargedLeftSwordAttack();
+            return; // Exit early - no beam in sword mode
+        }
+        
         primaryHandMechanics?.StopStream();
         
         // Notify holographic hands - BEAM STOP (reset effects)
@@ -489,11 +592,25 @@ public class PlayerShooterOrchestrator : MonoBehaviour
 
     private void HandleSecondaryTap()
     {
+        // 🕷️ DUAL ROPE GRAPPLING: Block shooting if RIGHT hand rope is active
+        if (_grapplingSystem != null && _grapplingSystem.IsRightRopeActive)
+        {
+            Debug.Log("[PlayerShooterOrchestrator] 🕷️ Right hand shooting BLOCKED - rope active!");
+            return; // Exit early - right hand is using rope, not gun
+        }
+        
         if (overheatManager.IsHandOverheated(false)) return;
         
         // SWORD MODE: If sword mode is active, trigger sword attack instead of shooting
         if (IsSwordModeActive)
         {
+            // 🔒 ATTACK LOCKOUT: Prevent attack during reveal animation (1 second after equipping)
+            if (Time.time < _rightSwordAttackLockoutUntil)
+            {
+                Debug.Log($"[RIGHT SWORD] Attack locked - reveal animation playing ({_rightSwordAttackLockoutUntil - Time.time:F2}s remaining)");
+                return; // Exit early - lockout active, reveal animation still playing
+            }
+            
             TriggerSwordAttack();
             return; // Exit early - no shooting in sword mode
         }
@@ -551,6 +668,13 @@ public class PlayerShooterOrchestrator : MonoBehaviour
 
     private void HandleSecondaryHoldStarted()
     {
+        // 🕷️ DUAL ROPE GRAPPLING: Block beam shooting if RIGHT hand rope is active
+        if (_grapplingSystem != null && _grapplingSystem.IsRightRopeActive)
+        {
+            Debug.Log("[PlayerShooterOrchestrator] 🕷️ Right hand beam shooting BLOCKED - rope active!");
+            return; // Exit early - right hand is using rope, not gun
+        }
+        
         if (overheatManager.IsHandOverheated(false)) return;
         
         // SWORD MODE: Start charging sword attack instead of beam shooting
@@ -1194,15 +1318,112 @@ public class PlayerShooterOrchestrator : MonoBehaviour
     #endregion
 
     // ============================================================================
-    // SWORD MODE SYSTEM - RIGHT HAND ONLY
+    // SWORD MODE SYSTEM - RIGHT HAND IMPLEMENTATION
     // ============================================================================
     
     /// <summary>
-    /// Toggle sword mode on/off (Backspace key)
+    /// Toggle RIGHT hand sword mode on/off (Hold RMB + Mouse4)
     /// Only affects right hand (secondary) - left hand continues shooting normally
     /// </summary>
-    private void ToggleSwordMode()
+    public void ToggleSwordMode()
     {
+        // ⚔️ MANUAL TOGGLE INVENTORY SYNC:
+        // When manually toggling ON, check if sword is in inventory and move to weapon slot
+        // When manually toggling OFF, move sword from weapon slot back to inventory
+        
+        if (!IsSwordModeActive)
+        {
+            // TOGGLING ON
+            if (!_isSwordAvailable)
+            {
+                // Sword not in weapon slot - check if it's in inventory and auto-equip it
+                Debug.Log("[PlayerShooterOrchestrator] 🔍 Sword not in weapon slot - searching inventory...");
+                
+                var inventoryManager = InventoryManager.Instance;
+                var weaponManager = WeaponEquipmentManager.Instance;
+                
+                if (inventoryManager != null && weaponManager != null && weaponManager.rightHandWeaponSlot != null)
+                {
+                    // Search inventory for a sword (manual iteration)
+                    var allSlots = inventoryManager.GetAllInventorySlots();
+                    UnifiedSlot swordSlot = null;
+                    
+                    foreach (var slot in allSlots)
+                    {
+                        if (!slot.IsEmpty && slot.CurrentItem is EquippableWeaponItemData weaponData && weaponData.weaponTypeID == "sword")
+                        {
+                            swordSlot = slot;
+                            break;
+                        }
+                    }
+                    
+                    if (swordSlot != null)
+                    {
+                        Debug.Log("[PlayerShooterOrchestrator] ⚔️ Found sword in inventory - auto-equipping to weapon slot!");
+                        
+                        // Get sword data
+                        var swordItem = swordSlot.CurrentItem;
+                        int swordCount = swordSlot.ItemCount;
+                        
+                        // Check if weapon slot is occupied
+                        if (!weaponManager.rightHandWeaponSlot.IsEmpty)
+                        {
+                            Debug.LogWarning("[PlayerShooterOrchestrator] ⚠️ Weapon slot occupied - cannot auto-equip!");
+                            return; // Can't equip - slot full
+                        }
+                        
+                        // Move to weapon slot
+                        weaponManager.rightHandWeaponSlot.SetItem(swordItem, swordCount, bypassValidation: true);
+                        swordSlot.ClearSlot();
+                        Debug.Log("[PlayerShooterOrchestrator] ✅ Sword auto-equipped - activation will happen via event system!");
+                        return; // Exit - SetItem will trigger events that activate sword mode
+                    }
+                    else
+                    {
+                        Debug.Log("[PlayerShooterOrchestrator] ❌ No sword found in inventory or weapon slot - cannot activate!");
+                        return; // No sword anywhere - abort
+                    }
+                }
+                else
+                {
+                    Debug.LogError("[PlayerShooterOrchestrator] ❌ InventoryManager or WeaponEquipmentManager not found!");
+                    return; // Abort
+                }
+            }
+            // If _isSwordAvailable is true, sword is already in weapon slot - proceed with activation below
+        }
+        else
+        {
+            // TOGGLING OFF - Move sword from weapon slot to inventory
+            WeaponEquipmentManager weaponManager = WeaponEquipmentManager.Instance;
+            if (weaponManager != null && weaponManager.rightHandWeaponSlot != null && !weaponManager.rightHandWeaponSlot.IsEmpty)
+            {
+                // Get the sword from weapon slot
+                ChestItemData swordItem = weaponManager.rightHandWeaponSlot.CurrentItem;
+                int swordCount = weaponManager.rightHandWeaponSlot.ItemCount;
+                
+                // Find first empty inventory slot
+                InventoryManager inventoryManager = InventoryManager.Instance;
+                if (inventoryManager != null)
+                {
+                    UnifiedSlot emptySlot = inventoryManager.GetFirstEmptySlot();
+                    if (emptySlot != null)
+                    {
+                        // Move sword to inventory
+                        emptySlot.SetItem(swordItem, swordCount, bypassValidation: true);
+                        weaponManager.rightHandWeaponSlot.ClearSlot();
+                        Debug.Log("[PlayerShooterOrchestrator] 🎒 Manual toggle OFF - moved sword to inventory!");
+                        return; // Exit - ClearSlot will trigger the full deactivation flow via events
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[PlayerShooterOrchestrator] ⚠️ No empty inventory slots - cannot unequip sword!");
+                        // Continue with deactivation anyway (just hide sword, don't move it)
+                    }
+                }
+            }
+        }
+        
         IsSwordModeActive = !IsSwordModeActive;
         
         if (IsSwordModeActive)
@@ -1261,6 +1482,10 @@ public class PlayerShooterOrchestrator : MonoBehaviour
                 {
                     rightHand.TriggerSwordReveal();
                     Debug.Log("[PlayerShooterOrchestrator] 🗡️ Triggered sword reveal animation!");
+                    
+                    // 🔒 SET ATTACK LOCKOUT: Prevent attacks for 1 second to let reveal animation play
+                    _rightSwordAttackLockoutUntil = Time.time + SWORD_EQUIP_LOCKOUT_DURATION;
+                    Debug.Log($"[RIGHT SWORD] Attack lockout set - attacks blocked until {_rightSwordAttackLockoutUntil:F2}");
                 }
                 else
                 {
@@ -1272,13 +1497,363 @@ public class PlayerShooterOrchestrator : MonoBehaviour
         {
             Debug.Log("[PlayerShooterOrchestrator] SWORD MODE DEACTIVATED - Right hand back to shooting mode");
             
-            // Deactivate sword visual GameObject
+            // ⚔️ CRITICAL: Deactivate sword visual GameObject IMMEDIATELY
+            // This overrides any animation state that might have enabled it
             if (swordVisualGameObject != null)
             {
                 swordVisualGameObject.SetActive(false);
-                Debug.Log("[PlayerShooterOrchestrator] Sword visual deactivated");
+                Debug.Log("[PlayerShooterOrchestrator] ⚔️ Sword visual FORCE DISABLED (overrides animation)");
+            }
+            else
+            {
+                Debug.LogError("[PlayerShooterOrchestrator] ⚠️ SWORD VISUAL GAMEOBJECT NOT ASSIGNED! Cannot hide sword mesh!");
+            }
+            
+            // ✅ CRITICAL FIX: Reset right hand animation back to idle when deactivating sword mode
+            // NOTE: We DON'T reset to idle - animations stay as they are, only mesh visibility changes
+            if (_layeredHandAnimationController != null)
+            {
+                var rightHand = _layeredHandAnimationController.rightHandController;
+                if (rightHand != null)
+                {
+                    // Stop all overlay animations (sword attacks, etc.)
+                    rightHand.ForceStopAllOverlays();
+                    
+                    Debug.Log("[PlayerShooterOrchestrator] ✅ Stopped sword overlay animations (keeping movement state)");
+                }
+                else
+                {
+                    Debug.LogWarning("[PlayerShooterOrchestrator] Right hand controller not found!");
+                }
+            }
+            else
+            {
+                Debug.LogWarning("[PlayerShooterOrchestrator] LayeredHandAnimationController not found!");
             }
         }
+    }
+    
+    /// <summary>
+    /// Toggle LEFT sword mode on/off (Mouse5 or inventory) - MIRROR of ToggleSwordMode() for LEFT hand
+    /// Includes inventory sync - moves swords between weapon slot and inventory
+    /// </summary>
+    public void ToggleLeftSwordMode()
+    {
+        // ⚔️ MANUAL TOGGLE INVENTORY SYNC:
+        // When manually toggling ON, check if sword is in inventory and move to LEFT weapon slot
+        // When manually toggling OFF, move sword from LEFT weapon slot back to inventory
+        
+        if (!IsLeftSwordModeActive)
+        {
+            // TOGGLING ON
+            if (!_isLeftSwordAvailable)
+            {
+                // Sword not in LEFT weapon slot - check if it's in inventory and auto-equip it
+                Debug.Log("[PlayerShooterOrchestrator] 🔍 LEFT Sword not in weapon slot - searching inventory...");
+                
+                var inventoryManager = InventoryManager.Instance;
+                var weaponManager = WeaponEquipmentManager.Instance;
+                
+                if (inventoryManager != null && weaponManager != null && weaponManager.leftHandWeaponSlot != null)
+                {
+                    // Search inventory for a LEFT hand sword (manual iteration)
+                    var allSlots = inventoryManager.GetAllInventorySlots();
+                    UnifiedSlot swordSlot = null;
+                    
+                    foreach (var slot in allSlots)
+                    {
+                        if (!slot.IsEmpty && slot.CurrentItem is EquippableWeaponItemData weaponData && 
+                            weaponData.weaponTypeID == "sword" && ((int)weaponData.allowedHands & 2) != 0) // LeftHand = 1 << 1 = 2
+                        {
+                            swordSlot = slot;
+                            break;
+                        }
+                    }
+                    
+                    if (swordSlot != null)
+                    {
+                        Debug.Log("[PlayerShooterOrchestrator] ⚔️ Found LEFT sword in inventory - auto-equipping to LEFT weapon slot!");
+                        
+                        // Get sword data
+                        var swordItem = swordSlot.CurrentItem;
+                        int swordCount = swordSlot.ItemCount;
+                        
+                        // Check if LEFT weapon slot is occupied
+                        if (!weaponManager.leftHandWeaponSlot.IsEmpty)
+                        {
+                            Debug.LogWarning("[PlayerShooterOrchestrator] ⚠️ LEFT Weapon slot occupied - cannot auto-equip!");
+                            return; // Can't equip - slot full
+                        }
+                        
+                        // Move to LEFT weapon slot
+                        weaponManager.leftHandWeaponSlot.SetItem(swordItem, swordCount, bypassValidation: true);
+                        swordSlot.ClearSlot();
+                        Debug.Log("[PlayerShooterOrchestrator] ✅ LEFT Sword auto-equipped - activation will happen via event system!");
+                        return; // Exit - SetItem will trigger events that activate LEFT sword mode
+                    }
+                    else
+                    {
+                        Debug.Log("[PlayerShooterOrchestrator] ❌ No LEFT sword found in inventory or weapon slot - cannot activate!");
+                        return; // No sword anywhere - abort
+                    }
+                }
+                else
+                {
+                    Debug.LogError("[PlayerShooterOrchestrator] ❌ InventoryManager or WeaponEquipmentManager not found!");
+                    return; // Abort
+                }
+            }
+            // If _isLeftSwordAvailable is true, sword is already in LEFT weapon slot - proceed with activation below
+        }
+        else
+        {
+            // TOGGLING OFF - Move LEFT sword from weapon slot to inventory
+            WeaponEquipmentManager weaponManager = WeaponEquipmentManager.Instance;
+            if (weaponManager != null && weaponManager.leftHandWeaponSlot != null && !weaponManager.leftHandWeaponSlot.IsEmpty)
+            {
+                // Get the sword from LEFT weapon slot
+                ChestItemData swordItem = weaponManager.leftHandWeaponSlot.CurrentItem;
+                int swordCount = weaponManager.leftHandWeaponSlot.ItemCount;
+                
+                // Find first empty inventory slot
+                InventoryManager inventoryManager = InventoryManager.Instance;
+                if (inventoryManager != null)
+                {
+                    UnifiedSlot emptySlot = inventoryManager.GetFirstEmptySlot();
+                    if (emptySlot != null)
+                    {
+                        // Move LEFT sword to inventory
+                        emptySlot.SetItem(swordItem, swordCount, bypassValidation: true);
+                        weaponManager.leftHandWeaponSlot.ClearSlot();
+                        Debug.Log("[PlayerShooterOrchestrator] 🎒 Manual toggle OFF - moved LEFT sword to inventory!");
+                        return; // Exit - ClearSlot will trigger the full deactivation flow via events
+                    }
+                    else
+                    {
+                        Debug.LogWarning("[PlayerShooterOrchestrator] ⚠️ No empty inventory slots - cannot unequip LEFT sword!");
+                        // Continue with deactivation anyway (just hide sword, don't move it)
+                    }
+                }
+            }
+        }
+        
+        IsLeftSwordModeActive = !IsLeftSwordModeActive;
+        
+        if (IsLeftSwordModeActive)
+        {
+            Debug.Log("[PlayerShooterOrchestrator] LEFT SWORD MODE ACTIVATED - Left hand now uses sword attacks");
+            
+            // SOUND: Play sword unsheath sound (⭐ in the eyes!)
+            if (SoundEventsManager.Events != null && SoundEventsManager.Events.swordUnsheath != null)
+            {
+                SoundEventsManager.Events.swordUnsheath.Play3D(transform.position);
+                Debug.Log("[PlayerShooterOrchestrator] 🗡️✨ Playing LEFT sword unsheath sound!");
+            }
+            
+            // 🔧 CRITICAL FIX: Stop beam mechanics AND animation BEFORE triggering sword reveal
+            // This prevents beam stop animation from playing when switching to LEFT sword mode
+            if (primaryHandMechanics != null && primaryHandMechanics.IsStreaming)
+            {
+                primaryHandMechanics.StopStream();
+                
+                // Stop beam sound if active
+                if (_primaryStreamHandle != null && _primaryStreamHandle.IsValid)
+                {
+                    _primaryStreamHandle.Stop();
+                    _primaryStreamHandle = SoundHandle.Invalid;
+                }
+                
+                // Notify holographic hands - BEAM STOP
+                NotifyHandsBeamStop();
+                
+                // STOP BEAM ANIMATION SILENTLY (without triggering beam stop animation)
+                if (_animationStateManager != null)
+                {
+                    _animationStateManager.RequestBeamStop(true); // Primary = left hand
+                }
+                else
+                {
+                    _layeredHandAnimationController?.OnBeamStopped(true);
+                }
+                
+                Debug.Log("[PlayerShooterOrchestrator] Stopped LEFT beam shooting before sword mode activation");
+            }
+            
+            // Activate LEFT sword visual GameObject
+            if (leftSwordVisualGameObject != null)
+            {
+                leftSwordVisualGameObject.SetActive(true);
+                Debug.Log("[PlayerShooterOrchestrator] LEFT Sword visual activated");
+            }
+            
+            // ANIMATION: Trigger sword reveal/unsheath animation on LEFT hand
+            // This now happens AFTER beam is fully stopped, preventing animation conflict
+            if (_layeredHandAnimationController != null)
+            {
+                var leftHand = _layeredHandAnimationController.leftHandController;
+                if (leftHand != null)
+                {
+                    leftHand.TriggerSwordReveal();
+                    Debug.Log("[PlayerShooterOrchestrator] 🗡️ Triggered LEFT sword reveal animation!");
+                    
+                    // 🔒 SET ATTACK LOCKOUT: Prevent attacks for 1 second to let reveal animation play
+                    _leftSwordAttackLockoutUntil = Time.time + SWORD_EQUIP_LOCKOUT_DURATION;
+                    Debug.Log($"[LEFT SWORD] Attack lockout set - attacks blocked until {_leftSwordAttackLockoutUntil:F2}");
+                }
+                else
+                {
+                    Debug.LogWarning("[PlayerShooterOrchestrator] Left hand controller not found for reveal animation!");
+                }
+            }
+        }
+        else
+        {
+            Debug.Log("[PlayerShooterOrchestrator] LEFT SWORD MODE DEACTIVATED - Left hand back to shooting mode");
+            
+            // ⚔️ CRITICAL: Deactivate LEFT sword visual GameObject IMMEDIATELY
+            // This overrides any animation state that might have enabled it
+            if (leftSwordVisualGameObject != null)
+            {
+                leftSwordVisualGameObject.SetActive(false);
+                Debug.Log("[PlayerShooterOrchestrator] ⚔️ LEFT Sword visual FORCE DISABLED (overrides animation)");
+            }
+            else
+            {
+                Debug.LogError("[PlayerShooterOrchestrator] ⚠️ LEFT SWORD VISUAL GAMEOBJECT NOT ASSIGNED! Cannot hide sword mesh!");
+            }
+            
+            // ✅ CRITICAL FIX: Reset left hand animation back to idle when deactivating sword mode
+            // NOTE: We DON'T reset to idle - animations stay as they are, only mesh visibility changes
+            if (_layeredHandAnimationController != null)
+            {
+                var leftHand = _layeredHandAnimationController.leftHandController;
+                if (leftHand != null)
+                {
+                    // Stop all overlay animations (sword attacks, etc.)
+                    leftHand.ForceStopAllOverlays();
+                    
+                    Debug.Log("[PlayerShooterOrchestrator] ✅ Stopped LEFT sword overlay animations (keeping movement state)");
+                }
+                else
+                {
+                    Debug.LogWarning("[PlayerShooterOrchestrator] Left hand controller not found!");
+                }
+            }
+            else
+            {
+                Debug.LogWarning("[PlayerShooterOrchestrator] LayeredHandAnimationController not found!");
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Called by WeaponEquipmentManager to enable/disable sword availability
+    /// ✅ UNIFIED SYSTEM: This method controls availability flag
+    /// Active state is controlled by ToggleSwordMode() (called from Mouse4 OR inventory equip)
+    /// When availability becomes false, this method FORCE deactivates sword mode if active
+    /// </summary>
+    public void SetSwordAvailable(bool available)
+    {
+        bool wasAvailable = _isSwordAvailable;
+        _isSwordAvailable = available;
+        
+        Debug.Log($"[PlayerShooterOrchestrator] Sword availability changed: {wasAvailable} → {available}");
+        
+        // ✅ CRITICAL FIX: If sword becomes unavailable while active, DIRECTLY deactivate
+        // Don't call ToggleSwordMode() because it checks availability and would be blocked
+        if (!available && IsSwordModeActive)
+        {
+            Debug.Log("[PlayerShooterOrchestrator] ⚔️ Sword unequipped while active - FORCE deactivating sword mode");
+            
+            // Set flag to false
+            IsSwordModeActive = false;
+            
+            // ⚔️ CRITICAL: Deactivate sword visual GameObject with error checking
+            // This MUST work to prevent "floating sword" bug
+            if (swordVisualGameObject != null)
+            {
+                swordVisualGameObject.SetActive(false);
+                Debug.Log("[PlayerShooterOrchestrator] ⚔️ Sword visual FORCE DISABLED on unequip (overrides animation)");
+            }
+            else
+            {
+                Debug.LogError("[PlayerShooterOrchestrator] ⚠️ CRITICAL: SWORD VISUAL GAMEOBJECT NOT ASSIGNED! Assign sword.OBJ in inspector!");
+            }
+            
+            // Reset right hand animation - STOP overlays only, don't change movement state
+            if (_layeredHandAnimationController != null)
+            {
+                var rightHand = _layeredHandAnimationController.rightHandController;
+                if (rightHand != null)
+                {
+                    rightHand.ForceStopAllOverlays();
+                    Debug.Log("[PlayerShooterOrchestrator] ✅ Stopped sword overlays on unequip");
+                }
+            }
+            
+            Debug.Log("[PlayerShooterOrchestrator] ✅ Sword mode FORCE deactivated - ready for shooting");
+        }
+    }
+    
+    /// <summary>
+    /// Called by WeaponEquipmentManager to enable/disable LEFT sword availability
+    /// Mirror of SetSwordAvailable() but for LEFT hand
+    /// </summary>
+    public void SetLeftSwordAvailable(bool available)
+    {
+        bool wasAvailable = _isLeftSwordAvailable;
+        _isLeftSwordAvailable = available;
+        
+        Debug.Log($"[PlayerShooterOrchestrator] LEFT Sword availability changed: {wasAvailable} → {available}");
+        
+        // ✅ CRITICAL FIX: If LEFT sword becomes unavailable while active, DIRECTLY deactivate
+        if (!available && IsLeftSwordModeActive)
+        {
+            Debug.Log("[PlayerShooterOrchestrator] ⚔️ LEFT Sword unequipped while active - FORCE deactivating left sword mode");
+            
+            // Set flag to false
+            IsLeftSwordModeActive = false;
+            
+            // ⚔️ CRITICAL: Deactivate LEFT sword visual GameObject
+            if (leftSwordVisualGameObject != null)
+            {
+                leftSwordVisualGameObject.SetActive(false);
+                Debug.Log("[PlayerShooterOrchestrator] ⚔️ LEFT Sword visual FORCE DISABLED on unequip");
+            }
+            else
+            {
+                Debug.LogError("[PlayerShooterOrchestrator] ⚠️ CRITICAL: LEFT SWORD VISUAL GAMEOBJECT NOT ASSIGNED!");
+            }
+            
+            // Reset left hand animation - STOP overlays only
+            if (_layeredHandAnimationController != null)
+            {
+                var leftHand = _layeredHandAnimationController.leftHandController;
+                if (leftHand != null)
+                {
+                    leftHand.ForceStopAllOverlays();
+                    Debug.Log("[PlayerShooterOrchestrator] ✅ Stopped LEFT sword overlays on unequip");
+                }
+            }
+            
+            Debug.Log("[PlayerShooterOrchestrator] ✅ LEFT Sword mode FORCE deactivated - ready for shooting");
+        }
+    }
+    
+    /// <summary>
+    /// Check if player can use sword mode (has sword equipped)
+    /// </summary>
+    public bool CanUseSwordMode()
+    {
+        return _isSwordAvailable;
+    }
+    
+    /// <summary>
+    /// Check if player can use LEFT sword mode (has LEFT sword equipped)
+    /// </summary>
+    public bool CanUseLeftSwordMode()
+    {
+        return _isLeftSwordAvailable;
     }
     
     /// <summary>
@@ -1435,6 +2010,170 @@ public class PlayerShooterOrchestrator : MonoBehaviour
             // NOT FULLY CHARGED - Execute normal attack
             Debug.Log("[PlayerShooterOrchestrator] ⚔️ Not fully charged, executing normal attack");
             TriggerSwordAttack();
+        }
+    }
+    
+    // ============================================================================
+    // LEFT HAND SWORD ATTACK METHODS - MIRROR OF RIGHT HAND
+    // ============================================================================
+    
+    /// <summary>
+    /// Trigger LEFT sword attack (called when LMB is clicked in LEFT sword mode)
+    /// Mirror of TriggerSwordAttack() but for LEFT hand
+    /// </summary>
+    private void TriggerLeftSwordAttack()
+    {
+        if (leftSwordDamage == null)
+        {
+            Debug.LogWarning("[PlayerShooterOrchestrator] LEFT Sword damage script not assigned! Please assign the LEFT sword GameObject in the inspector.");
+            return;
+        }
+        
+        // Check if LEFT sword is ready to attack
+        if (!leftSwordDamage.IsReady())
+        {
+            Debug.Log("[PlayerShooterOrchestrator] LEFT Sword on cooldown");
+            return;
+        }
+        
+        Debug.Log($"[PlayerShooterOrchestrator] LEFT SWORD ATTACK {_currentLeftSwordAttackIndex} TRIGGERED!");
+        
+        // SOUND: Play sword swing sound (whoosh!)
+        if (SoundEventsManager.Events != null && SoundEventsManager.Events.swordSwing != null)
+        {
+            SoundEventsManager.Events.swordSwing.Play3D(leftSwordDamage.transform.position);
+            Debug.Log("[PlayerShooterOrchestrator] 🗡️ Playing LEFT sword swing sound");
+        }
+        
+        // IMMEDIATE DAMAGE: Call damage right away for testing (remove animation event dependency)
+        // TODO: Once you add animation event, move this call to the animation event
+        leftSwordDamage.DealDamage();
+        
+        // Trigger LEFT sword attack animation on left hand with current attack index
+        // Animation event will call leftSwordDamage.DealDamage() at the right frame (once you set it up)
+        if (_layeredHandAnimationController != null)
+        {
+            // Get left hand controller (primary = left hand)
+            var leftHand = _layeredHandAnimationController.leftHandController;
+            if (leftHand != null)
+            {
+                leftHand.TriggerSwordAttack(_currentLeftSwordAttackIndex);
+                
+                // Alternate between attack 1 and 2 for next time
+                _currentLeftSwordAttackIndex = (_currentLeftSwordAttackIndex == 1) ? 2 : 1;
+            }
+            else
+            {
+                Debug.LogWarning("[PlayerShooterOrchestrator] Left hand controller not found!");
+            }
+        }
+        else
+        {
+            Debug.LogWarning("[PlayerShooterOrchestrator] LayeredHandAnimationController not found!");
+        }
+    }
+    
+    /// <summary>
+    /// Start charging a powerful LEFT sword attack (hold LMB in LEFT sword mode)
+    /// Mirror of StartChargingSwordAttack() but for LEFT hand
+    /// </summary>
+    private void StartChargingLeftSwordAttack()
+    {
+        if (leftSwordDamage == null)
+        {
+            Debug.LogWarning("[PlayerShooterOrchestrator] LEFT Sword damage script not assigned!");
+            return;
+        }
+        
+        // Check if LEFT sword is ready to attack
+        if (!leftSwordDamage.IsReady())
+        {
+            Debug.Log("[PlayerShooterOrchestrator] LEFT Sword on cooldown - cannot charge");
+            return;
+        }
+        
+        _isChargingLeftSwordAttack = true;
+        _leftSwordChargeStartTime = Time.time;
+        
+        Debug.Log("[PlayerShooterOrchestrator] ⚡ CHARGING LEFT SWORD ATTACK!");
+        
+        // ANIMATION: Trigger charge animation on left hand
+        if (_layeredHandAnimationController != null)
+        {
+            var leftHand = _layeredHandAnimationController.leftHandController;
+            if (leftHand != null)
+            {
+                leftHand.TriggerSwordCharge();
+                Debug.Log("[PlayerShooterOrchestrator] ⚡ Triggered LEFT sword charge animation!");
+            }
+        }
+        
+        // SOUND: Play looping charge sound
+        if (SoundEventsManager.Events != null && SoundEventsManager.Events.swordChargeLoop != null)
+        {
+            _leftSwordChargeLoopHandle = SoundEventsManager.Events.swordChargeLoop.PlayAttached(leftSwordDamage.transform);
+            Debug.Log("[PlayerShooterOrchestrator] ⚡ Playing LEFT sword charge loop sound!");
+        }
+    }
+    
+    /// <summary>
+    /// Release the charged LEFT sword attack (release LMB in LEFT sword mode)
+    /// Mirror of ReleaseChargedSwordAttack() but for LEFT hand
+    /// </summary>
+    private void ReleaseChargedLeftSwordAttack()
+    {
+        if (!_isChargingLeftSwordAttack)
+        {
+            return;
+        }
+        
+        // Stop charging
+        _isChargingLeftSwordAttack = false;
+        
+        // Stop charge loop sound
+        if (_leftSwordChargeLoopHandle.IsValid)
+        {
+            _leftSwordChargeLoopHandle.Stop();
+            _leftSwordChargeLoopHandle = SoundHandle.Invalid;
+        }
+        
+        // Calculate charge duration
+        float chargeDuration = Time.time - _leftSwordChargeStartTime;
+        bool isFullyCharged = chargeDuration >= leftSwordDamage.chargeTime;
+        
+        Debug.Log($"[PlayerShooterOrchestrator] 💥 RELEASING LEFT SWORD ATTACK! Charge duration: {chargeDuration:F2}s, Fully charged: {isFullyCharged}");
+        
+        if (isFullyCharged)
+        {
+            // FULLY CHARGED - Execute power attack
+            Debug.Log("[PlayerShooterOrchestrator] 💥 LEFT FULLY CHARGED POWER ATTACK!");
+            
+            // SOUND: Play HEAVY sword swing sound FIRST (special whoosh!) - ALWAYS plays regardless of hit
+            if (SoundEventsManager.Events != null && SoundEventsManager.Events.swordHeavySwing != null)
+            {
+                SoundEventsManager.Events.swordHeavySwing.Play3D(leftSwordDamage.transform.position);
+                Debug.Log("[PlayerShooterOrchestrator] 🗡️💥 Playing LEFT HEAVY power attack swing sound");
+            }
+            
+            // ANIMATION: Trigger power attack animation on left hand
+            if (_layeredHandAnimationController != null)
+            {
+                var leftHand = _layeredHandAnimationController.leftHandController;
+                if (leftHand != null)
+                {
+                    leftHand.TriggerSwordPowerAttack();
+                    Debug.Log("[PlayerShooterOrchestrator] 💥 Triggered LEFT power attack animation!");
+                }
+            }
+            
+            // DAMAGE: Call charged damage (animation event can also call this)
+            leftSwordDamage.DealChargedDamage();
+        }
+        else
+        {
+            // NOT FULLY CHARGED - Execute normal attack
+            Debug.Log("[PlayerShooterOrchestrator] ⚔️ LEFT Not fully charged, executing normal attack");
+            TriggerLeftSwordAttack();
         }
     }
 

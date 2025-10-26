@@ -209,75 +209,12 @@ public class PlayerAnimationStateManager : MonoBehaviour
             currentState = targetState;
             lastStateChangeTime = Time.time;
             
-            // 🎯 DIRECTIONAL SPRINT: Detect sprint direction and pass to animators
-            IndividualLayeredHandController.SprintDirection sprintDir = IndividualLayeredHandController.SprintDirection.Forward;
-            if (targetState == PlayerAnimationState.Sprint && movementController != null)
-            {
-                sprintDir = DetermineSprintDirection();
-            }
-            
-            // Update hand animators with sprint direction
+            // Update hand animators - simple unified sprint (no direction variants)
             if (handAnimationController != null)
             {
-                handAnimationController.SetMovementState((int)currentState, sprintDir);
+                handAnimationController.SetMovementState((int)currentState);
             }
         }
-    }
-    
-    /// <summary>
-    /// 🎯 Determine sprint direction from movement input
-    /// Uses AAAMovementController's tracked sprint input for accurate direction
-    /// </summary>
-    private IndividualLayeredHandController.SprintDirection DetermineSprintDirection()
-    {
-        if (movementController == null)
-            return IndividualLayeredHandController.SprintDirection.Forward;
-        
-        Vector2 sprintInput = movementController.CurrentSprintInput;
-        
-        // Thresholds for direction detection
-        const float DIAGONAL_THRESHOLD = 0.5f; // Both X and Y above this = diagonal
-        const float CARDINAL_THRESHOLD = 0.3f; // Single axis above this = cardinal direction
-        
-        float absX = Mathf.Abs(sprintInput.x);
-        float absY = Mathf.Abs(sprintInput.y);
-        
-        // Backward sprint (S key)
-        if (sprintInput.y < -CARDINAL_THRESHOLD)
-        {
-            if (absX > DIAGONAL_THRESHOLD)
-            {
-                // Diagonal backward
-                return sprintInput.x < 0 ? 
-                    IndividualLayeredHandController.SprintDirection.BackwardLeft : 
-                    IndividualLayeredHandController.SprintDirection.BackwardRight;
-            }
-            return IndividualLayeredHandController.SprintDirection.Backward;
-        }
-        
-        // Forward sprint (W key) - default/most common
-        if (sprintInput.y > CARDINAL_THRESHOLD)
-        {
-            if (absX > DIAGONAL_THRESHOLD)
-            {
-                // Diagonal forward
-                return sprintInput.x < 0 ? 
-                    IndividualLayeredHandController.SprintDirection.ForwardLeft : 
-                    IndividualLayeredHandController.SprintDirection.ForwardRight;
-            }
-            return IndividualLayeredHandController.SprintDirection.Forward;
-        }
-        
-        // Pure strafe (A or D key only)
-        if (absX > CARDINAL_THRESHOLD)
-        {
-            return sprintInput.x < 0 ? 
-                IndividualLayeredHandController.SprintDirection.StrafeLeft : 
-                IndividualLayeredHandController.SprintDirection.StrafeRight;
-        }
-        
-        // Fallback to forward
-        return IndividualLayeredHandController.SprintDirection.Forward;
     }
     
     /// <summary>
@@ -423,17 +360,10 @@ public class PlayerAnimationStateManager : MonoBehaviour
             MarkActivity(); // Manual state changes (Jump, Land, etc.) = active
         }
         
-        // 🎯 DIRECTIONAL SPRINT: Detect sprint direction for manual state changes too
-        IndividualLayeredHandController.SprintDirection sprintDir = IndividualLayeredHandController.SprintDirection.Forward;
-        if (newState == PlayerAnimationState.Sprint && movementController != null)
-        {
-            sprintDir = DetermineSprintDirection();
-        }
-        
-        // Update hand animators with sprint direction
+        // Update hand animators - simple unified sprint (no direction variants)
         if (handAnimationController != null)
         {
-            handAnimationController.SetMovementState((int)currentState, sprintDir);
+            handAnimationController.SetMovementState((int)currentState);
         }
     }
     

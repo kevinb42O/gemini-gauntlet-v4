@@ -3,7 +3,6 @@ using GeminiGauntlet.Audio;
 
 /// <summary>
 /// Adds grounded-only crouch/duck behavior for CleanAAAMovementController.
-/// - Hold LeftControl to crouch while Walking and grounded
 /// - Smoothly adjusts CharacterController height/center and camera local Y
 /// - Prevents standing if there is no headroom
 /// - All target heights (player + camera) configurable in Inspector
@@ -175,11 +174,15 @@ public class CleanAAACrouch : MonoBehaviour
     // Runtime state
     private bool isCrouching = false;
     private bool toggleLatched = false;
-    private float footOffsetLocalY;   // Keeps feet aligned to ground when changing height
+    private float footOffsetLocalY;   // DEPRECATED: No longer used - center is always height/2 to match AAAMovementController
     private Vector3 cameraLocalStart; // To preserve X/Z
 
     private float targetHeight;
     private float targetCameraY;
+    
+    // Crouch height transition state - locks bottom position during entire transition
+    private bool isTransitioningHeight = false;
+    private float lockedBottomY = 0f;
 
     // Slide runtime
     private bool isSliding = false;
@@ -2129,7 +2132,8 @@ public class CleanAAACrouch : MonoBehaviour
         Vector3 currentTop = worldCenterCurrent + Vector3.up * currentTopOffset;
 
         // Compute target head position for standing height
-        float targetCenterY = footOffsetLocalY + (standingHeight * 0.5f);
+        // CRITICAL FIX: Use standingHeight / 2 directly (matches fix in ApplyHeightAndCameraUpdates)
+        float targetCenterY = standingHeight * 0.5f;
         Vector3 worldCenterTarget = transform.position + new Vector3(controller.center.x, targetCenterY, controller.center.z);
         float targetTopOffset = (standingHeight * 0.5f) - controller.radius;
         Vector3 targetTop = worldCenterTarget + Vector3.up * targetTopOffset;
@@ -2153,8 +2157,7 @@ public class CleanAAACrouch : MonoBehaviour
     
     private void ApplyHeightAndCameraUpdates()
     {
-        // BRILLIANT: Dynamic lerp speed based on landing impact
-        // High-speed landings get INSTANT crouch for impact feel
+        // Dynamic lerp speed based on landing impact for responsive feel
         float dynamicHeightLerpSpeed = heightLerpSpeed;
         float dynamicCameraLerpSpeed = cameraLerpSpeed;
         
@@ -2175,12 +2178,13 @@ public class CleanAAACrouch : MonoBehaviour
         {
             float stepH = Mathf.Max(0.01f, dynamicHeightLerpSpeed) * Time.deltaTime;
             float newH = Mathf.MoveTowards(controller.height, targetHeight, stepH);
+            
             if (!Mathf.Approximately(newH, controller.height))
             {
+                // CRITICAL: Keep center.y CONSTANT so CharacterController doesn't move the GameObject!
+                // Only change the HEIGHT - center stays at standing height / 2
                 controller.height = newH;
-                Vector3 c = controller.center;
-                c.y = footOffsetLocalY + newH * 0.5f; // keep feet planted
-                controller.center = c;
+                // DON'T change center.y at all!
             }
         }
 

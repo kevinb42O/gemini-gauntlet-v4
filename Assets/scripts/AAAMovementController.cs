@@ -58,6 +58,16 @@ public class AAAMovementController : MonoBehaviour
     [SerializeField] private float moveSpeed = 900f; // SCALED 3x for 320-unit character (was 105)
     [SerializeField] private float sprintMultiplier = 1.65f; // SCALED for 320-unit character (was 1.85)
     
+    [Header("=== AAA+ ACCELERATION SYSTEM ===")]
+    [Tooltip("Ground acceleration rate (higher = faster response). Source Engine uses 600-1200.")]
+    [SerializeField] private float groundAcceleration = 2400f; // TUNED: Increased for snappier response (was 1800f)
+    [Tooltip("Friction when no input (higher = faster stop). Source Engine uses 400-800.")]
+    [SerializeField] private float groundFriction = 1800f; // TUNED: Increased to reduce ice-skating feel (was 1200f)
+    [Tooltip("Speed below which friction is stronger (for snappy stops).")]
+    [SerializeField] private float stopSpeed = 200f; // TUNED: Increased for more aggressive stops (was 150f)
+    [Tooltip("Enable acceleration-based movement (AAA industry standard).")]
+    [SerializeField] private bool enableAccelerationSystem = true;
+    
     [Header("=== AIR CONTROL ===")]
     [Tooltip("How much control you have in the air (0 = none, 1 = full). Lower = more momentum-based.")]
     [SerializeField] private float airControlStrength = 0.25f; // SCALED for 320-unit character (was 0.28)
@@ -132,6 +142,26 @@ public class AAAMovementController : MonoBehaviour
     private Collider lastWallJumpedFrom = null; // The specific wall object we just jumped from
     private int lastWallJumpedInstanceID = 0; // Backup ID in case collider gets destroyed
     
+    // ✨ BUILT-IN COLLISION DETECTION: Use CharacterController's collision data (WAY simpler!)
+    private CollisionFlags lastCollisionFlags; // Tracks what we hit (sides, below, above)
+    private Vector3 lastWallCollisionNormal = Vector3.zero; // Wall normal from actual collision
+    private Vector3 lastWallCollisionPoint = Vector3.zero; // Wall hit point from actual collision
+    private Collider lastWallCollider = null; // Collider we're touching (for same-wall detection)
+    private bool isCurrentlyTouchingWall = false; // True when actively colliding with wall this frame
+    private float lastWallContactTime = -999f; // When we last touched a wall
+    
+    // 🎮 FORGIVENESS BUFFER: Multiple recent wall contacts for consistent detection
+    private const int MAX_WALL_HISTORY = 5; // Remember last 5 wall contacts
+    private struct WallContact
+    {
+        public Vector3 normal;
+        public Vector3 point;
+        public Collider collider;
+        public float time;
+    }
+    private WallContact[] recentWallContacts = new WallContact[MAX_WALL_HISTORY];
+    private int wallContactIndex = 0;
+    
     [Header("=== 🎪 TRICK JUMP MOMENTUM BOOST SYSTEM ===")]
     [Tooltip("Enable momentum boost for trick jumps (middle-click aerial tricks)")]
     [SerializeField] private bool enableTrickJumpBoost = false; // DISABLED: Jump same height as normal jumps
@@ -178,6 +208,18 @@ public class AAAMovementController : MonoBehaviour
     [Tooltip("Maximum angle of a slope the character can walk on.")]
     [SerializeField] private float maxSlopeAngle = 50f; // SCALED for 320-unit character (was 45)
     
+    [Header("=== SLOPE MOMENTUM SYSTEM ===")]
+    [Tooltip("Enable natural slope physics during walking (gravity acceleration downhill, friction uphill).")]
+    [SerializeField] private bool enableSlopeMomentum = true;
+    [Tooltip("Acceleration multiplier on downhill slopes (gravity component).")]
+    [SerializeField] private float slopeAccelerationMultiplier = 0.4f; // Subtle but noticeable
+    [Tooltip("Friction multiplier on uphill slopes (resists movement).")]
+    [SerializeField] private float uphillFrictionMultiplier = 1.8f; // Harder to run uphill
+    [Tooltip("Minimum slope angle (degrees) to apply slope physics.")]
+    [SerializeField] private float minimumSlopeAngle = 8f;
+    [Tooltip("Speed bonus percentage when jumping off downhill slopes (ramp jumps).")]
+    [SerializeField] private float rampJumpBonus = 0.25f; // 25% speed boost
+    
     // PHASE 4 COHERENCE: Slope limit coordination with CleanAAACrouch
     private float _originalSlopeLimitFromAwake = 45f; // Store original for restoration
 
@@ -195,12 +237,34 @@ public class AAAMovementController : MonoBehaviour
     public bool IsSprintingBackward => currentSprintInput.y < -0.3f;
     public bool IsSprintingStrafeLeft => currentSprintInput.x < -0.3f;
     public bool IsSprintingStrafeRight => currentSprintInput.x > 0.3f;
+    
+    /// <summary>
+    /// Returns normalized sprint animation speed (0.0 = walk speed, 1.0 = full sprint speed)
+    /// This syncs hand animations with the acceleration-based movement system
+    /// </summary>
+    public float NormalizedSprintSpeed
+    {
+        get
+        {
+            // Calculate target sprint speed (base move speed * sprint multiplier)
+            float maxSprintSpeed = MoveSpeed * SprintMultiplier;
+            
+            // Get current horizontal speed
+            float currentHorizontalSpeed = new Vector3(velocity.x, 0, velocity.z).magnitude;
+            
+            // Normalize: 0.0 at walk speed (MoveSpeed), 1.0 at full sprint (maxSprintSpeed)
+            // This creates smooth acceleration from walk → sprint animation speeds
+            float normalizedSpeed = Mathf.Clamp01((currentHorizontalSpeed - MoveSpeed) / (maxSprintSpeed - MoveSpeed));
+            
+            return normalizedSpeed;
+        }
+    }
 
     [Header("=== COLLISION ===")]
     [Tooltip("Height of the character's collision capsule.")]
     [SerializeField] private float playerHeight = 320f; // SCALED for 320-unit character (was 300)
-    [Tooltip("Radius of the character's collision capsule.")]
-    [SerializeField] private float playerRadius = 50f; // Matches config
+    [Tooltip("Radius of the character's collision capsule. LARGER = earlier wall detection for wall jumps!")]
+    [SerializeField] private float playerRadius = 75f; // Increased from 50 for more forgiving wall jump timing
     
     [Header("=== MOVING PLATFORM SUPPORT ===")]
     [Tooltip("Disable movement logic when parented to moving platforms (elevators, etc.)")]
@@ -896,9 +960,20 @@ public class AAAMovementController : MonoBehaviour
         if (controller.enabled) {
             Vector3 velocityBeforeMove = velocity;
             
+            // ✨ CAPTURE COLLISION FLAGS - This tells us what we hit (ground, walls, ceiling)
+            // This is FREE data from the CharacterController - no raycasts needed!
+            isCurrentlyTouchingWall = false; // Reset each frame - OnControllerColliderHit will set to true if we hit wall
+            
             // ZERO-JITTER: Platform movement handled in FixedUpdate via MovePlatformPassenger
             // Just apply character's own velocity here
-            controller.Move(velocity * Time.deltaTime);
+            lastCollisionFlags = controller.Move(velocity * Time.deltaTime);
+            
+            // Check if we lost wall contact (haven't touched wall in a while)
+            if (Time.time - lastWallContactTime > 0.1f)
+            {
+                lastWallCollider = null; // Clear wall reference if not touching anymore
+                LastWallHitPoint = Vector3.zero;
+            }
         }
         
         // POST-MOVEMENT GROUND CORRECTION (Lightweight fallback for any remaining issues)
@@ -1202,8 +1277,10 @@ public class AAAMovementController : MonoBehaviour
                 _currentCelestialPlatform.UnregisterPassenger(this);
                 Debug.Log($"[PLATFORM] Unregistered from platform: {_currentCelestialPlatform.name}");
                 
-                // Store momentum for jump inheritance
-                _lastPlatformVelocity = _currentCelestialPlatform.GetCurrentVelocity();
+                // Store momentum for jump inheritance - ONLY HORIZONTAL!
+                // CRITICAL FIX: Zero out Y component to prevent inconsistent jump heights
+                Vector3 platformVel = _currentCelestialPlatform.GetCurrentVelocity();
+                _lastPlatformVelocity = new Vector3(platformVel.x, 0f, platformVel.z);
                 _currentCelestialPlatform = null;
             }
             
@@ -1246,8 +1323,10 @@ public class AAAMovementController : MonoBehaviour
                 _currentCelestialPlatform.UnregisterPassenger(this);
                 Debug.Log($"[PLATFORM] Left platform (airborne): {_currentCelestialPlatform.name}");
                 
-                // Store momentum for potential re-landing
-                _lastPlatformVelocity = _currentCelestialPlatform.GetCurrentVelocity();
+                // Store momentum for potential re-landing - ONLY HORIZONTAL!
+                // CRITICAL FIX: Zero out Y component to prevent inconsistent jump heights
+                Vector3 platformVel = _currentCelestialPlatform.GetCurrentVelocity();
+                _lastPlatformVelocity = new Vector3(platformVel.x, 0f, platformVel.z);
                 _currentCelestialPlatform = null;
             }
         }
@@ -1876,9 +1955,103 @@ public class AAAMovementController : MonoBehaviour
                 // MOMENTUM-BASED AIR CONTROL - Feels AAA!
                 if (IsGrounded)
                 {
-                    // On ground: use smoothed velocity for AAA feel
-                    velocity.x = targetHorizontalVelocity.x;
-                    velocity.z = targetHorizontalVelocity.z;
+                    // === AAA+ ACCELERATION SYSTEM (SOURCE ENGINE STYLE) ===
+                    // Industry standard: acceleration-based movement for responsive feel
+                    // Benefits: Frame-rate independent, predictable physics, skill-based
+                    
+                    if (enableAccelerationSystem)
+                    {
+                        // Get current horizontal velocity
+                        Vector3 currentHorizontalVel = new Vector3(velocity.x, 0, velocity.z);
+                        float currentSpeed = currentHorizontalVel.magnitude;
+                        
+                        // Check if player has movement input
+                        bool hasInput = Mathf.Abs(inputX) > 0.01f || Mathf.Abs(inputY) > 0.01f;
+                        
+                        if (hasInput)
+                        {
+                            // === ACCELERATION PHASE ===
+                            // Calculate desired velocity from input
+                            Vector3 desiredVelocity = targetHorizontalVelocity;
+                            float desiredSpeed = desiredVelocity.magnitude;
+                            
+                            // Calculate velocity delta needed
+                            Vector3 velocityDelta = desiredVelocity - currentHorizontalVel;
+                            
+                            // Apply slope momentum if enabled
+                            float effectiveAcceleration = groundAcceleration;
+                            if (enableSlopeMomentum && currentSlopeAngle > minimumSlopeAngle)
+                            {
+                                // Calculate slope factor (-1 = downhill, +1 = uphill)
+                                Vector3 downhillDir = Vector3.ProjectOnPlane(Vector3.down, groundNormal).normalized;
+                                float slopeDirection = Vector3.Dot(moveDirection.normalized, downhillDir);
+                                
+                                if (slopeDirection > 0.1f)
+                                {
+                                    // Moving downhill - boost acceleration
+                                    float slopeFactor = Mathf.Sin(currentSlopeAngle * Mathf.Deg2Rad);
+                                    effectiveAcceleration *= (1f + (slopeAccelerationMultiplier * slopeFactor * slopeDirection));
+                                }
+                                else if (slopeDirection < -0.1f)
+                                {
+                                    // Moving uphill - reduce acceleration (more resistance)
+                                    float slopeFactor = Mathf.Sin(currentSlopeAngle * Mathf.Deg2Rad);
+                                    effectiveAcceleration /= (1f + (uphillFrictionMultiplier * slopeFactor * Mathf.Abs(slopeDirection)));
+                                }
+                            }
+                            
+                            // Frame-rate independent acceleration
+                            float maxSpeedChange = effectiveAcceleration * Time.deltaTime;
+                            
+                            // Clamp velocity change to max acceleration
+                            if (velocityDelta.magnitude > maxSpeedChange)
+                            {
+                                velocityDelta = velocityDelta.normalized * maxSpeedChange;
+                            }
+                            
+                            // Apply acceleration
+                            velocity.x += velocityDelta.x;
+                            velocity.z += velocityDelta.z;
+                        }
+                        else
+                        {
+                            // === FRICTION PHASE (NO INPUT) ===
+                            // Apply ground friction to slow down smoothly
+                            if (currentSpeed > 0.01f)
+                            {
+                                // Speed-proportional friction (Source Engine model)
+                                float frictionAmount = groundFriction;
+                                
+                                // Stronger friction at low speeds for snappy stops
+                                if (currentSpeed < stopSpeed)
+                                {
+                                    frictionAmount *= (currentSpeed / stopSpeed) + 1f;
+                                }
+                                
+                                // Apply friction force (frame-rate independent)
+                                float frictionMagnitude = frictionAmount * Time.deltaTime;
+                                
+                                // Don't overshoot zero
+                                if (frictionMagnitude >= currentSpeed)
+                                {
+                                    velocity.x = 0f;
+                                    velocity.z = 0f;
+                                }
+                                else
+                                {
+                                    Vector3 frictionForce = -currentHorizontalVel.normalized * frictionMagnitude;
+                                    velocity.x += frictionForce.x;
+                                    velocity.z += frictionForce.z;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // LEGACY: Instant velocity (old system)
+                        velocity.x = targetHorizontalVelocity.x;
+                        velocity.z = targetHorizontalVelocity.z;
+                    }
                 }
                 else
                 {
@@ -1946,6 +2119,12 @@ public class AAAMovementController : MonoBehaviour
             lastWallJumpedFrom = null;
             lastWallJumpedInstanceID = 0;
             
+            // MOMENTUM VISUALIZATION: Break chain on landing
+            if (MomentumVisualization.Instance != null)
+            {
+                MomentumVisualization.Instance.BreakChain();
+            }
+            
             // Landing impact detection
             if (isFalling)
             {
@@ -2004,13 +2183,14 @@ public class AAAMovementController : MonoBehaviour
                         Vector3 slopeDirection = Vector3.ProjectOnPlane(Vector3.down, groundNormal).normalized;
                         velocity += slopeDirection * descentPull;
                         
-                        // Ensure we stick to the slope (prevent small bounces)
-                        velocity.y = Mathf.Min(velocity.y, -2f);
+                        // GENTLE SLOPE STICK: Keep player grounded on slopes without excessive downward velocity
+                        // Clamped to reasonable range to prevent jump height contamination
+                        velocity.y = Mathf.Clamp(velocity.y, -5f, -1f); // Constrained range for clean jumps
                     }
                     else
                     {
-                        // Flat ground or very gentle slope - just prevent floating
-                        velocity.y = Mathf.Max(velocity.y, -2f);
+                        // Flat ground or very gentle slope - minimal stick force
+                        velocity.y = Mathf.Clamp(velocity.y, -2f, 0f); // Allow slight upward for step climbing
                     }
                 }
             }
@@ -2098,7 +2278,10 @@ public class AAAMovementController : MonoBehaviour
             // Handle Double Jump Input (ONLY if we didn't just wall jump)
             if (!performedWallJump && Input.GetKeyDown(Controls.UpThrustJump) && airJumpRemaining > 0)
             {
-                velocity.y = Mathf.Sqrt(DoubleJumpForce * -2f * Gravity);
+                // CONSERVATION STYLE: Preserve upward momentum + add boost
+                // If rising: Adds to momentum (chain bonus!)
+                // If falling: Starts fresh (safety net)
+                velocity.y = Mathf.Max(velocity.y, 0) + DoubleJumpForce;
                 airJumpRemaining--;
 
                 // Play double jump sound using the centralized sound system
@@ -2108,7 +2291,7 @@ public class AAAMovementController : MonoBehaviour
                 if (_animationStateManager != null)
                 {
                     _animationStateManager.SetMovementState((int)PlayerAnimationStateManager.PlayerAnimationState.Jump);
-                    Debug.Log("[JUMP] Double jump animation triggered");
+                    Debug.Log("[JUMP] Double jump animation triggered - Conservation style (preserved upward momentum)");
                 }
             }
         }
@@ -2157,27 +2340,78 @@ public class AAAMovementController : MonoBehaviour
                 Debug.Log("[JUMP] Cleared external force");
             }
 
-            // Apply jump force
+            // ARCHITECTURAL FIX: Clean velocity state for consistent jumps
+            // PROBLEM: Slope descent adds accumulative velocity over multiple frames
+            // SOLUTION: Zero Y-axis completely, then rebuild ONLY what we want
+            
+            // Step 1: Preserve horizontal velocity (player movement + any existing momentum)
+            float currentHorizontalSpeed = new Vector3(velocity.x, 0f, velocity.z).magnitude;
+            Vector3 horizontalDirection = new Vector3(velocity.x, 0f, velocity.z);
+            if (currentHorizontalSpeed > 0.01f)
+            {
+                horizontalDirection = horizontalDirection.normalized;
+            }
+            
+            // Step 2: Zero Y to remove ALL slope contamination (descent pulls downward over time)
+            velocity.y = 0f;
+
+            // Step 3: Apply pure jump force to clean Y-axis
             velocity.y = jumpPower;
             
-            // MODERN PLATFORM SYSTEM: Inherit platform momentum when jumping
+            // Step 4: Add platform momentum (HORIZONTAL ONLY, pre-cleaned in CheckGrounded)
+            // This preserves platform movement feel while keeping jump HEIGHT consistent
             if (_currentCelestialPlatform != null)
             {
-                // Get platform's movement delta and convert to velocity
                 Vector3 platformDelta = _currentCelestialPlatform.GetMovementDelta();
                 Vector3 platformVelocity = platformDelta / Time.fixedDeltaTime;
                 
-                // Add platform's horizontal velocity to maintain momentum
+                // Add ONLY horizontal platform velocity (Y already zero from CheckGrounded line 1239)
                 velocity.x += platformVelocity.x;
                 velocity.z += platformVelocity.z;
-                Debug.Log($"[PLATFORM] Jump inherited platform momentum: {platformVelocity} | New velocity: {velocity}");
+                
+                Debug.Log($"[JUMP] Platform momentum: ({platformVelocity.x:F1}, {platformVelocity.z:F1}) | Player speed: {currentHorizontalSpeed:F0} | Jump: {jumpPower:F1}");
             }
             else if (_lastPlatformVelocity.sqrMagnitude > 0.001f)
             {
-                // Recently left platform - still inherit some momentum
-                velocity.x += _lastPlatformVelocity.x * 0.5f; // 50% momentum retention
+                // Inherit 50% of last platform velocity for smooth transition off platform
+                velocity.x += _lastPlatformVelocity.x * 0.5f;
                 velocity.z += _lastPlatformVelocity.z * 0.5f;
-                Debug.Log($"[PLATFORM] Jump inherited recent platform momentum (50%): {_lastPlatformVelocity}");
+                
+                Debug.Log($"[JUMP] Last platform momentum (50%): ({_lastPlatformVelocity.x * 0.5f:F1}, {_lastPlatformVelocity.z * 0.5f:F1}) | Jump: {jumpPower:F1}");
+            }
+            else if (currentSlopeAngle > 5f)
+            {
+                // === RAMP JUMP SYSTEM ===
+                // Give speed boost when jumping off downhill slopes (like real ramp jumps!)
+                if (enableSlopeMomentum && currentSlopeAngle > minimumSlopeAngle)
+                {
+                    // Check if moving downhill
+                    Vector3 downhillDir = Vector3.ProjectOnPlane(Vector3.down, groundNormal).normalized;
+                    Vector3 currentHorizontalVel = new Vector3(velocity.x, 0, velocity.z);
+                    float slopeDirection = Vector3.Dot(currentHorizontalVel.normalized, downhillDir);
+                    
+                    if (slopeDirection > 0.3f && currentHorizontalSpeed > 100f)
+                    {
+                        // Moving downhill with speed - RAMP JUMP!
+                        // Apply speed bonus (scales with slope angle)
+                        float slopeFactor = Mathf.Sin(currentSlopeAngle * Mathf.Deg2Rad);
+                        float speedBonus = currentHorizontalSpeed * rampJumpBonus * slopeFactor;
+                        
+                        // Add bonus in current movement direction
+                        velocity.x += horizontalDirection.x * speedBonus;
+                        velocity.z += horizontalDirection.z * speedBonus;
+                        
+                        Debug.Log($"[RAMP JUMP] Speed boost! Angle: {currentSlopeAngle:F1}°, Bonus: {speedBonus:F1}, New Speed: {new Vector3(velocity.x, 0, velocity.z).magnitude:F1}");
+                    }
+                    else
+                    {
+                        Debug.Log($"[JUMP] Clean slope jump: {currentSlopeAngle:F1}° slope, horizontal speed: {currentHorizontalSpeed:F0}, jump: {jumpPower:F1}");
+                    }
+                }
+                else
+                {
+                    Debug.Log($"[JUMP] Clean slope jump: {currentSlopeAngle:F1}° slope, horizontal speed: {currentHorizontalSpeed:F0}, jump: {jumpPower:F1}");
+                }
             }
             
             // Suppress grounded detection for jump duration
@@ -2203,6 +2437,10 @@ public class AAAMovementController : MonoBehaviour
             canJump = false;
             hasJumped = true; // Mark that player actually jumped
             IsGrounded = false; // Force ungrounded state
+            
+            // CRITICAL FIX: Clear cached platform velocity after jump to prevent reuse
+            // This ensures future jumps don't inherit stale platform data
+            _lastPlatformVelocity = Vector3.zero;
             
             // Update last grounded time to prevent immediate coyote time
             lastGroundedTime = Time.time - CoyoteTime - 0.01f;
@@ -3143,9 +3381,10 @@ public class AAAMovementController : MonoBehaviour
     }
     
     /// <summary>
-    /// Detect if there's a wall nearby using multi-directional raycasts
-    /// BRILLIANT SOLUTION: Works on tilted platforms by using ground normal as reference
-    /// 🔒 ENHANCED: Now returns the collider for same-wall detection
+    /// ✨ SIMPLIFIED WALL DETECTION - Uses CharacterController's built-in collision data!
+    /// Replaces 8-directional raycasts with actual collision information from OnControllerColliderHit.
+    /// This is more reliable, more performant, and actually reflects what the player is touching.
+    /// 🎮 FORGIVENESS: Uses buffered contacts for consistent detection even during frame gaps.
     /// </summary>
     private bool DetectWall(out Vector3 wallNormal, out Vector3 hitPoint)
     {
@@ -3154,108 +3393,56 @@ public class AAAMovementController : MonoBehaviour
     }
     
     /// <summary>
-    /// Detect if there's a wall nearby using multi-directional raycasts
-    /// BRILLIANT SOLUTION: Works on tilted platforms by using ground normal as reference
-    /// 🔒 ENHANCED: Returns the collider for same-wall detection
+    /// ✨ SIMPLIFIED WALL DETECTION - Uses CharacterController's built-in collision data!
+    /// Returns TRUE if we're currently touching a wall (from actual collision, not raycasts).
+    /// Overload with collider output for same-wall spam prevention.
+    /// 🎮 FORGIVENESS: Checks buffered contacts within grace period for responsive wall jumps.
     /// </summary>
     private bool DetectWall(out Vector3 wallNormal, out Vector3 hitPoint, out Collider wallCollider)
     {
+        // 🎮 FORGIVENESS SYSTEM: Check recent wall contacts within extended grace period
+        // This makes wall jumps feel consistent even if collision detection has tiny gaps
+        float extendedGracePeriod = WallJumpGracePeriod * 2f; // Double the grace period for detection
+        
+        // Find the MOST RECENT valid wall contact within grace period
+        WallContact? bestContact = null;
+        float newestTime = -999f;
+        
+        for (int i = 0; i < MAX_WALL_HISTORY; i++)
+        {
+            WallContact contact = recentWallContacts[i];
+            if (contact.collider == null) continue; // Skip empty slots
+            
+            float age = Time.time - contact.time;
+            if (age <= extendedGracePeriod && contact.time > newestTime)
+            {
+                bestContact = contact;
+                newestTime = contact.time;
+            }
+        }
+        
+        // Use the best recent contact if found
+        if (bestContact.HasValue)
+        {
+            wallNormal = bestContact.Value.normal;
+            hitPoint = bestContact.Value.point;
+            wallCollider = bestContact.Value.collider;
+            
+            if (ShowWallJumpDebug)
+            {
+                float age = Time.time - bestContact.Value.time;
+                Debug.Log($"[WALL DETECT] ✅ Recent wall contact: {wallCollider.name} (age: {age:F3}s)");
+                Debug.DrawRay(hitPoint, wallNormal * 50f, Color.green, 0.1f);
+            }
+            
+            return true;
+        }
+        
+        // No valid wall contacts within grace period
         wallNormal = Vector3.zero;
         hitPoint = Vector3.zero;
         wallCollider = null;
-        
-        if (controller == null) return false;
-        
-        // === BRILLIANT: Use ground normal as "up" reference for tilted platforms ===
-        // This makes wall detection work perfectly on slopes, ramps, and tilted surfaces
-        Vector3 playerUp = groundNormal; // Player's current "up" direction
-        Vector3 playerRight = Vector3.Cross(playerUp, transform.forward).normalized;
-        Vector3 playerForward = Vector3.Cross(playerRight, playerUp).normalized;
-        
-        // Check 8 directions around the player RELATIVE TO GROUND NORMAL
-        // This ensures walls are detected correctly even on 45° slopes
-        Vector3 origin = transform.position + playerUp * (controller.height * 0.5f);
-        
-        Vector3[] directions = new Vector3[]
-        {
-            playerForward,
-            (playerForward + playerRight).normalized,
-            playerRight,
-            (playerRight - playerForward).normalized,
-            -playerForward,
-            (-playerForward - playerRight).normalized,
-            -playerRight,
-            (-playerRight + playerForward).normalized
-        };
-        
-        float closestDistance = float.MaxValue;
-        bool foundWall = false;
-        
-        foreach (Vector3 direction in directions)
-        {
-            RaycastHit hit;
-            if (Physics.Raycast(origin, direction, out hit, WallDetectionDistance, GroundMask, QueryTriggerInteraction.Ignore)) // CRITICAL: Use properties!
-            {
-                // === BRILLIANT: Validate wall relative to PLAYER'S up, not world up ===
-                // This makes wall detection work on ANY surface angle
-                float angleFromPlayerUp = Vector3.Angle(hit.normal, playerUp);
-                float angleFromWorldUp = Vector3.Angle(hit.normal, Vector3.up);
-                
-                // Wall must be mostly perpendicular to player's up (60-120° from player up)
-                // This works whether player is on flat ground, 30° slope, or even 45° ramp
-                if (angleFromPlayerUp > 60f && angleFromPlayerUp < 120f)
-                {
-                    // === BRILLIANT: Additional validation - wall must not be the ground itself ===
-                    // Prevent wall jumping off the ground on steep slopes
-                    bool isNotGround = angleFromWorldUp > 45f; // Ground is < 45° from world up
-                    
-                    if (isNotGround)
-                    {
-                        // 🚀 FACE-FIRST WALL JUMP FIX: Allow wall jumps from ANY approach angle
-                        // The wall jump system will push you away using the wall normal
-                        // This enables dramatic "jump into wall -> backflip away" mechanics
-                        
-                        if (hit.distance < closestDistance)
-                        {
-                            closestDistance = hit.distance;
-                            wallNormal = hit.normal;
-                            hitPoint = hit.point;
-                            wallCollider = hit.collider; // 🔒 STORE THE COLLIDER
-                            foundWall = true;
-                            
-                            if (ShowWallJumpDebug) // CRITICAL: Use property!
-                            {
-                                Debug.Log($"[JUMP] Wall detected - Angle from player up: {angleFromPlayerUp:F1}°, Angle from world up: {angleFromWorldUp:F1}°");
-                            }
-                        }
-                    }
-                }
-                
-                // Debug visualization
-                if (ShowWallJumpDebug) // CRITICAL: Use property!
-                {
-                    bool isValidWall = (angleFromPlayerUp > 60f && angleFromPlayerUp < 120f && angleFromWorldUp > 45f);
-                    Color debugColor = isValidWall ? Color.cyan : Color.gray;
-                    Debug.DrawRay(origin, direction * hit.distance, debugColor);
-                }
-            }
-            else if (ShowWallJumpDebug) // CRITICAL: Use property!
-            {
-                Debug.DrawRay(origin, direction * WallDetectionDistance, Color.red); // CRITICAL: Use property!
-            }
-        }
-        
-        // Extra debug: Draw the detected wall normal
-        if (foundWall && ShowWallJumpDebug) // CRITICAL: Use property!
-        {
-            Debug.DrawRay(hitPoint, wallNormal * 30f, Color.yellow);
-            Debug.DrawLine(transform.position, hitPoint, Color.green);
-        }
-        
-        // Store hit point for camera system (zero if no wall found)
-        LastWallHitPoint = foundWall ? hitPoint : Vector3.zero;
-        
-        return foundWall;
+        return false;
     }
     
     /// <summary>
@@ -3336,50 +3523,61 @@ public class AAAMovementController : MonoBehaviour
         }
         
         // ============================================================
-        // CALCULATE FORCES
+        // CALCULATE FORCES - CONSERVATION STYLE (ADDITIVE)
         // ============================================================
         
         // UPWARD FORCE: Constant (predictable arc)
         float upForce = WallJumpUpForce;
         
-        // HORIZONTAL FORCE: Base force in chosen direction
-        float horizontalForce = WallJumpOutForce;
+        // BASE BONUS: Flat velocity added for wall jump
+        float baseBonus = WallJumpOutForce;
         
-        // CAMERA BOOST: Extra force if using camera direction
+        // CAMERA BOOST: Extra force if using camera direction (additive)
+        float cameraBonus = 0f;
         if (cameraDirection != Vector3.zero && WallJumpCameraDirectionBoost > 0)
         {
-            horizontalForce += WallJumpCameraDirectionBoost;
+            cameraBonus = WallJumpCameraDirectionBoost;
         }
         
-        // FALL ENERGY: Convert fall speed to horizontal boost
+        // FALL ENERGY: Convert fall speed to horizontal boost (additive)
         float fallSpeed = Mathf.Abs(velocity.y);
-        float fallEnergyBoost = fallSpeed * WallJumpFallSpeedBonus;
-        horizontalForce += fallEnergyBoost;
+        float fallEnergyBonus = fallSpeed * WallJumpFallSpeedBonus;
         
         // ============================================================
-        // BUILD FINAL VELOCITY
+        // BUILD FINAL VELOCITY - CONSERVATION STYLE
         // ============================================================
+        // Formula: Preserved Velocity + Skill Bonuses + Situational Bonuses
         
-        // Create wall jump velocity (fresh start)
-        Vector3 wallJumpVelocity = (horizontalDirection * horizontalForce) + (playerUp * upForce);
-        
-        // MOMENTUM PRESERVATION: Blend current velocity with wall jump velocity
-        // 0.0 = use only wall jump velocity (fresh start)
-        // 1.0 = keep 100% of current horizontal velocity + wall jump
+        // STEP 1: Preserve percentage of current horizontal momentum
         Vector3 currentHorizontalVelocity = new Vector3(velocity.x, 0, velocity.z);
         Vector3 preservedVelocity = currentHorizontalVelocity * WallJumpMomentumPreservation;
         
-        // Final velocity = wall jump + (preserved percentage of current velocity)
-        velocity = wallJumpVelocity + preservedVelocity;
+        // STEP 2: Add wall jump bonuses (all additive!)
+        Vector3 wallJumpBonus = horizontalDirection * (baseBonus + cameraBonus + fallEnergyBonus);
+        
+        // STEP 3: Combine preserved + bonuses
+        Vector3 finalHorizontalVelocity = preservedVelocity + wallJumpBonus;
+        
+        // STEP 4: Set final velocity (horizontal + vertical)
+        float speedBefore = currentHorizontalVelocity.magnitude;
+        velocity = finalHorizontalVelocity + (playerUp * upForce);
+        float speedAfter = velocity.magnitude;
         
         if (ShowWallJumpDebug)
         {
-            Debug.Log($"[JUMP] === AAA WALL JUMP ===");
+            Debug.Log($"[JUMP] === CONSERVATION WALL JUMP ===");
             Debug.Log($"[JUMP] Direction: {horizontalDirection}");
-            Debug.Log($"[JUMP] Horizontal Force: {horizontalForce:F1} (Base: {WallJumpOutForce:F1}, Camera: {WallJumpCameraDirectionBoost:F1}, Fall: {fallEnergyBoost:F1})");
+            Debug.Log($"[JUMP] Preserved Momentum: {preservedVelocity.magnitude:F1} ({WallJumpMomentumPreservation:F2}%)");
+            Debug.Log($"[JUMP] Bonuses: Base={baseBonus:F1}, Camera={cameraBonus:F1}, Fall={fallEnergyBonus:F1}");
+            Debug.Log($"[JUMP] Total Horizontal: {finalHorizontalVelocity.magnitude:F1}");
             Debug.Log($"[JUMP] Upward Force: {upForce:F1}");
-            Debug.Log($"[JUMP] Momentum Preservation: {WallJumpMomentumPreservation:F2}");
             Debug.Log($"[JUMP] Final Velocity: {velocity.magnitude:F1}");
+        }
+        
+        // MOMENTUM VISUALIZATION: Report speed gain
+        if (MomentumVisualization.Instance != null)
+        {
+            MomentumVisualization.Instance.OnSpeedGain(speedBefore, speedAfter, transform.position);
         }
         
         // Protect wall jump velocity from air control interference
@@ -3455,8 +3653,10 @@ public class AAAMovementController : MonoBehaviour
     }
     
     /// <summary>
-    /// Handle wall collisions to prevent sticking.
-    /// When player hits a wall and can't wall jump, push them away slightly.
+    /// <summary>
+    /// ✨ BUILT-IN COLLISION CALLBACK - Unity calls this automatically when CharacterController hits something!
+    /// Handles: Wall jump detection, wall bounces, anti-exploit wall locking
+    /// This replaces the complex 8-directional raycast system with actual collision data.
     /// </summary>
     private void OnControllerColliderHit(ControllerColliderHit hit)
     {
@@ -3478,6 +3678,32 @@ public class AAAMovementController : MonoBehaviour
         bool isWall = angleFromUp > 60f && angleFromUp < 120f;
         
         if (!isWall) return;
+        
+        // ✨ NEW: Store in circular buffer for consistency (remember multiple contacts)
+        recentWallContacts[wallContactIndex] = new WallContact
+        {
+            normal = hit.normal,
+            point = hit.point,
+            collider = hit.collider,
+            time = Time.time
+        };
+        wallContactIndex = (wallContactIndex + 1) % MAX_WALL_HISTORY;
+        
+        // Update current contact data
+        lastWallCollisionNormal = hit.normal;
+        lastWallCollisionPoint = hit.point;
+        lastWallCollider = hit.collider;
+        isCurrentlyTouchingWall = true;
+        lastWallContactTime = Time.time;
+        
+        // Update LastWallHitPoint for camera system
+        LastWallHitPoint = hit.point;
+        
+        if (ShowWallJumpDebug)
+        {
+            Debug.Log($"[WALL COLLISION] Hit wall: {hit.collider.name}, Normal: {hit.normal}, Angle: {angleFromUp:F1}°");
+            Debug.DrawRay(hit.point, hit.normal * 50f, Color.cyan, 0.5f);
+        }
         
         // 🔒 ANTI-EXPLOIT: Clear wall lock when touching ANY other object
         // This allows wall jumping again after touching a different surface

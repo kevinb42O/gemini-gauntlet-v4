@@ -1,4 +1,5 @@
 using UnityEngine;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine.UI;
@@ -19,6 +20,14 @@ public class InventoryManager : MonoBehaviour
     public UnifiedSlot gemSlot;
     public BackpackSlotController backpackSlot;
     public VestSlotController vestSlot; // VEST SYSTEM: Reference to vest slot
+    
+    [Header("Weapon Equipment Slots")]
+    [Tooltip("Right hand weapon slot (UnifiedSlot with isWeaponSlot = true) - Used for auto-equip")]
+    public UnifiedSlot rightHandWeaponSlot;
+    
+    [Tooltip("Left hand weapon slot (UnifiedSlot with isWeaponSlot = true) - FUTURE")]
+    public UnifiedSlot leftHandWeaponSlot;
+    
     public Transform inventorySlotsParent;
     
     [Header("Inventory UI")]
@@ -469,11 +478,25 @@ public class InventoryManager : MonoBehaviour
         {
             Debug.LogWarning("[InventoryManager] inventorySlotsParent is null - cannot initialize slots");
         }
+        
+        // ⚔️ NEW: Subscribe weapon slots to drag/drop handlers for weapon slot ↔ inventory transfers
+        if (rightHandWeaponSlot != null)
+        {
+            rightHandWeaponSlot.OnItemDropped += HandleInventoryItemDropped;
+            Debug.Log($"[InventoryManager] ✅ Subscribed rightHandWeaponSlot to drag/drop handler");
+        }
+        
+        if (leftHandWeaponSlot != null)
+        {
+            leftHandWeaponSlot.OnItemDropped += HandleInventoryItemDropped;
+            Debug.Log($"[InventoryManager] ✅ Subscribed leftHandWeaponSlot to drag/drop handler");
+        }
     }
     
     /// <summary>
     /// Add item to inventory - core functionality
     /// ATOMIC OPERATION: All-or-nothing with proper validation
+    /// ⚔️ WEAPON AUTO-EQUIP: If item is an equippable weapon and weapon slot is empty, auto-equip there
     /// </summary>
     /// <param name="item">Item to add</param>
     /// <param name="count">Count to add</param>
@@ -493,6 +516,47 @@ public class InventoryManager : MonoBehaviour
         if (item is GemItemData || item.itemType.ToLower() == "gem" || item.itemName.ToLower().Contains("gem"))
         {
             return TryAddGemToGemSlot(item, count);
+        }
+        
+        // ⚔️ WEAPON AUTO-EQUIP: Check if this is an equippable weapon
+        if (item is EquippableWeaponItemData weaponData)
+        {
+            // UNIFIED: Use InventoryManager's own weapon slot reference (same slot WeaponEquipmentManager uses)
+            if (rightHandWeaponSlot != null && rightHandWeaponSlot.IsEmpty)
+            {
+                // AUTO-EQUIP: Directly equip to weapon slot instead of inventory
+                Debug.Log($"[InventoryManager] ⚔️ AUTO-EQUIP: Weapon slot empty - equipping {weaponData.itemName} directly!");
+                
+                rightHandWeaponSlot.SetItem(weaponData, count, bypassValidation: true);
+                
+                // ⚔️ AUTO-ACTIVATE: After equipping, activate sword mode if not already active
+                GameObject player = GameObject.FindGameObjectWithTag("Player");
+                if (player != null)
+                {
+                    PlayerShooterOrchestrator playerShooter = player.GetComponent<PlayerShooterOrchestrator>();
+                    if (playerShooter != null && !playerShooter.IsSwordModeActive)
+                    {
+                        // Run coroutine on player (persistent object)
+                        playerShooter.StartCoroutine(ActivateSwordModeNextFrame(playerShooter));
+                        Debug.Log("[InventoryManager] ⚔️ Started auto-activation coroutine on player");
+                    }
+                }
+                
+                OnItemAdded?.Invoke(item, count);
+                OnInventoryChanged?.Invoke();
+                
+                if (autoSave)
+                {
+                    SaveInventoryData();
+                }
+                
+                return true;
+            }
+            else
+            {
+                Debug.Log($"[InventoryManager] Weapon slot occupied - adding {weaponData.itemName} to regular inventory");
+                // Fall through to normal inventory logic
+            }
         }
         
         // REMOVED: Self-revive items are no longer forced to revive slot
@@ -1629,6 +1693,7 @@ public class InventoryManager : MonoBehaviour
     
     /// <summary>
     /// Handle drag and drop operations within inventory slots for rearrangement
+    /// ⚔️ WEAPON SLOT SUPPORT: Also handles weapon slot ↔ inventory slot transfers
     /// </summary>
     private void HandleInventoryItemDropped(UnifiedSlot sourceSlot, UnifiedSlot targetSlot)
     {
@@ -1648,11 +1713,29 @@ public class InventoryManager : MonoBehaviour
             return;
         }
         
-        // Both slots must be inventory slots (prevent cross-container issues)
-        if (!inventorySlots.Contains(sourceSlot) || !inventorySlots.Contains(targetSlot))
+        // ⚔️ NEW: Allow drag/drop between weapon slots and inventory slots
+        // Valid combinations:
+        // 1. Inventory → Inventory (original functionality)
+        // 2. Inventory ↔ Weapon Slot (new functionality)
+        bool sourceIsInventory = inventorySlots.Contains(sourceSlot);
+        bool targetIsInventory = inventorySlots.Contains(targetSlot);
+        bool sourceIsWeaponSlot = (sourceSlot == rightHandWeaponSlot || sourceSlot == leftHandWeaponSlot);
+        bool targetIsWeaponSlot = (targetSlot == rightHandWeaponSlot || targetSlot == leftHandWeaponSlot);
+        
+        // Reject if neither source nor target is an inventory/weapon slot
+        if (!sourceIsInventory && !sourceIsWeaponSlot)
         {
+            Debug.Log($"[InventoryManager] ❌ Drag rejected: Source slot {sourceSlot.gameObject.name} is not inventory or weapon slot");
             return;
         }
+        
+        if (!targetIsInventory && !targetIsWeaponSlot)
+        {
+            Debug.Log($"[InventoryManager] ❌ Drag rejected: Target slot {targetSlot.gameObject.name} is not inventory or weapon slot");
+            return;
+        }
+        
+        Debug.Log($"[InventoryManager] 🔄 DRAG/DROP: {sourceSlot.gameObject.name} (weapon:{sourceIsWeaponSlot}) → {targetSlot.gameObject.name} (weapon:{targetIsWeaponSlot}) | Item: {sourceSlot.CurrentItem?.itemName}");
         
         
         // Handle the operation based on target slot state
@@ -2055,6 +2138,29 @@ public class InventoryManager : MonoBehaviour
         catch (System.Exception e)
         {
             Debug.LogError($"[InventoryManager] Error loading inventory data safely: {e.Message}");
+        }
+    }
+    
+    /// <summary>
+    /// Coroutine: Activate sword mode on the next frame after equipping
+    /// This ensures WeaponEquipmentManager processes the slot change first via OnSlotChanged event
+    /// Then we activate sword mode to complete the seamless pickup flow
+    /// ⭐ STATIC: Can run on any MonoBehaviour (runs on player since this is singleton)
+    /// </summary>
+    private static System.Collections.IEnumerator ActivateSwordModeNextFrame(PlayerShooterOrchestrator playerShooter)
+    {
+        // Wait for next frame to ensure WeaponEquipmentManager.CheckRightHandEquipment() has executed
+        yield return null;
+        
+        // Now activate sword mode (if sword is available)
+        if (playerShooter.CanUseSwordMode() && !playerShooter.IsSwordModeActive)
+        {
+            playerShooter.ToggleSwordMode();
+            Debug.Log("[InventoryManager] ⚔️ AUTO-ACTIVATED sword mode after pickup!");
+        }
+        else
+        {
+            Debug.LogWarning($"[InventoryManager] ⚠️ Could not auto-activate sword mode - CanUse: {playerShooter.CanUseSwordMode()}, IsActive: {playerShooter.IsSwordModeActive}");
         }
     }
     

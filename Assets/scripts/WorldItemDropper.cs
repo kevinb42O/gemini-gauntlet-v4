@@ -19,29 +19,111 @@ public class WorldItemDropper : MonoBehaviour
 
     public void DropItem(ChestItemData itemData, int count, Vector3 position)
     {
-        if (itemData == null || count <= 0) return;
+        Debug.Log($"[WorldItemDropper] 🎯 DropItem() called - Item: {itemData?.itemName}, Count: {count}, Position: {position}");
+        
+        if (itemData == null)
+        {
+            Debug.LogError("[WorldItemDropper] ❌ itemData is NULL! Cannot drop item.");
+            return;
+        }
+        
+        if (count <= 0)
+        {
+            Debug.LogError($"[WorldItemDropper] ❌ Invalid count ({count})! Cannot drop item.");
+            return;
+        }
 
         // Adjust drop position
         Vector3 dropPosition = position + Vector3.up * dropHeight;
+        Debug.Log($"[WorldItemDropper] 📍 Adjusted drop position: {dropPosition} (added {dropHeight} height)");
         
         // Create dropped item
+        Debug.Log($"[WorldItemDropper] 🏗️ Creating dropped item...");
         GameObject droppedItem = CreateDroppedItem(itemData, count, dropPosition);
         
         if (droppedItem != null)
         {
+            Debug.Log($"[WorldItemDropper] ✅ Dropped item created: {droppedItem.name}");
+            
             // Apply physics force
             ApplyDropForce(droppedItem);
             
             // Play drop sound
             PlayDropSound(dropPosition);
             
-            Debug.Log($"Dropped {count}x {itemData.itemName} at {dropPosition}");
+            Debug.Log($"[WorldItemDropper] ✅✅✅ SUCCESS! Dropped {count}x {itemData.itemName} at {dropPosition}");
+        }
+        else
+        {
+            Debug.LogError($"[WorldItemDropper] ❌❌❌ CreateDroppedItem returned NULL!");
         }
     }
 
     private GameObject CreateDroppedItem(ChestItemData itemData, int count, Vector3 position)
     {
+        Debug.Log($"[WorldItemDropper] 🏗️ CreateDroppedItem() - Type: {itemData.GetType().Name}");
+        
         GameObject droppedItem;
+        
+        // Special handling for equippable weapons
+        if (itemData is EquippableWeaponItemData weaponData)
+        {
+            Debug.Log($"[WorldItemDropper] ⚔️ Detected EquippableWeaponItemData: {weaponData.itemName}");
+            Debug.Log($"[WorldItemDropper] Weapon Type ID: {weaponData.weaponTypeID}");
+            Debug.Log($"[WorldItemDropper] World Item Model: {(weaponData.worldItemModel != null ? weaponData.worldItemModel.name : "NULL")}");
+            
+            if (weaponData.worldItemModel != null)
+            {
+                // Use weapon-specific model
+                Debug.Log($"[WorldItemDropper] 📦 Instantiating worldItemModel: {weaponData.worldItemModel.name}");
+                droppedItem = Instantiate(weaponData.worldItemModel, position, Quaternion.identity);
+                Debug.Log($"[WorldItemDropper] ✅ Instantiated: {droppedItem.name}");
+                
+                // ⚠️ CRITICAL FIX: Ensure spawned item is ACTIVE (visible)
+                if (!droppedItem.activeSelf)
+                {
+                    Debug.Log($"[WorldItemDropper] ⚡ Item was inactive - ACTIVATING NOW!");
+                    droppedItem.SetActive(true);
+                }
+                
+                // ⚠️ ADDITIONAL FIX: Ensure all child renderers are enabled
+                Renderer[] renderers = droppedItem.GetComponentsInChildren<Renderer>(true);
+                foreach (Renderer renderer in renderers)
+                {
+                    if (!renderer.enabled)
+                    {
+                        Debug.Log($"[WorldItemDropper] ⚡ Enabling disabled renderer: {renderer.gameObject.name}");
+                        renderer.enabled = true;
+                    }
+                }
+                Debug.Log($"[WorldItemDropper] ✅ Verified {renderers.Length} renderers are enabled");
+                
+                // Add WorldSwordPickup component if it's a sword
+                if (weaponData.weaponTypeID == "sword")
+                {
+                    Debug.Log($"[WorldItemDropper] ⚔️ Weapon is a sword - adding WorldSwordPickup component");
+                    WorldSwordPickup pickup = droppedItem.GetComponent<WorldSwordPickup>();
+                    if (pickup == null)
+                    {
+                        Debug.Log($"[WorldItemDropper] Adding new WorldSwordPickup component...");
+                        pickup = droppedItem.AddComponent<WorldSwordPickup>();
+                    }
+                    else
+                    {
+                        Debug.Log($"[WorldItemDropper] WorldSwordPickup already exists on prefab");
+                    }
+                    pickup.swordItemData = weaponData;
+                    Debug.Log($"[WorldItemDropper] ✅ WorldSwordPickup configured with swordItemData: {weaponData.itemName}");
+                }
+                
+                Debug.Log($"[WorldItemDropper] ✅ Dropped weapon: {weaponData.itemName} at {position}");
+                return droppedItem;
+            }
+            else
+            {
+                Debug.LogError($"[WorldItemDropper] ❌ EquippableWeaponItemData has NULL worldItemModel! Cannot spawn weapon.");
+            }
+        }
 
         if (droppedItemPrefab != null)
         {
@@ -54,6 +136,13 @@ public class WorldItemDropper : MonoBehaviour
             droppedItem = CreateBasicDroppedItem(position);
         }
 
+        // ⚠️ CRITICAL FIX: Ensure spawned item is ACTIVE (visible)
+        if (!droppedItem.activeSelf)
+        {
+            Debug.Log($"[WorldItemDropper] ⚡ Generic item was inactive - ACTIVATING NOW!");
+            droppedItem.SetActive(true);
+        }
+        
         // Configure the dropped item
         ConfigureDroppedItem(droppedItem, itemData, count);
 

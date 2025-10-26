@@ -620,7 +620,7 @@ namespace GeminiGauntlet.Audio
         // Track the current falling wind sound handle
         private static SoundHandle currentFallingWindHandle = SoundHandle.Invalid;
         
-        public static void StartFallingWindLoop(Transform parent, float volume = 1f)
+        public static SoundHandle StartFallingWindLoop(Transform parent, float volume = 1f)
         {
             // Stop any existing falling wind sound first
             if (currentFallingWindHandle.IsValid)
@@ -633,10 +633,12 @@ namespace GeminiGauntlet.Audio
             {
                 currentFallingWindHandle = SafeEvents.fallingWindLoop.PlayAttached(parent, volume);
                 Debug.Log("<color=cyan>🔊 FALLING WIND LOOP STARTED</color>");
+                return currentFallingWindHandle;
             }
             else
             {
                 Debug.LogWarning("🔊 Falling wind loop sound not configured in SoundEvents");
+                return SoundHandle.Invalid;
             }
         }
         

@@ -14,11 +14,13 @@ This is **Gemini Gauntlet V4.0**, a Unity 3D action-adventure game featuring dua
 - **`AAA_CRITICAL_FIXES_COMPLETE.md`** - All critical movement/physics fixes applied
 - **`AAA_BLEEDING_OUT_DELUXE_COMPLETE.md`** - Advanced dying state system
 - **`AAA_FALLING_DAMAGE_SYSTEM_COMPLETE.md`** - Physics-based damage system
-- **`AAA_WALLHACK_COMPLETE_PACKAGE.md`** - ESP/cheat system implementation
+- **`AAA_WALLHACK_COMPLETE_PACKAGE.md`** - ESP/cheat system implementation (deprecated but included)
 
 ### 🎯 Latest Feature Systems (Oct 2025)
 - **`KEYCARD_SYSTEM_COMPLETE.md`** - Door access system with 5 keycard types
 - **`AAA_SWORD_MODE_IMPLEMENTATION_COMPLETE.md`** - Melee combat system
+- **`AAA_EQUIPPABLE_SWORD_MASTER_INDEX.md`** - Equipment-gated weapon system with inventory integration
+- **`IMPLEMENTATION_COMPLETE_SUMMARY.md`** - Latest equippable sword implementation details
 - **`AAA_COMPLETE_AUDIO_COMBO_SYSTEM.md`** - XP combo multiplier with audio
 - **`ELEVATOR_SYSTEM_SUMMARY.md`** - Elevator keycard mechanics
 - **`AAA_ORBITAL_RING_SYSTEM_COMPLETE.md`** - Procedural platform generation upgrade
@@ -98,6 +100,14 @@ Most systems include setup automation:
 3. Include setup helper with validation
 4. Add namespace following `GeminiGauntlet.[Domain]` pattern
 
+### Adding Equippable Weapons
+1. Create `EquippableWeaponItemData` asset via `Assets > Create > Inventory > Equippable Weapon`
+2. Configure weapon properties (hand type, weapon ID, unique flag)
+3. Create world pickup prefab with `WorldSwordPickup` component
+4. Add to chest loot tables via `ChestController.swordItemData`
+5. `WeaponEquipmentManager` auto-syncs with `PlayerShooterOrchestrator`
+6. Use `UnifiedSlot.OnSlotChanged` event for equipment tracking
+
 ### Testing & Debugging
 - Use GameManager's cached references instead of `FindObjectOfType`
 - Check Console for system initialization messages (✅/❌ patterns)
@@ -154,10 +164,14 @@ When modifying existing systems, always check for related setup guides and integ
 - **3D Audio Standard**: `spatialBlend = 1f`, `minDistance = 5f`, `maxDistance = 500f`
 
 ### ✋ Hand & Combat Systems
-**Current Implementation**: Dual-hand shooting + holographic effects
+**Current Implementation**: Dual-hand shooting + holographic effects + equippable sword system
 - **Shooting**: `PlayerShooterOrchestrator.cs` with emit points
 - **Holographic**: `Assets/AAA_HOLOGRAPHIC_INTEGRATION_GUIDE.md`
 - **Sword Mode**: `AAA_SWORD_MODE_IMPLEMENTATION_COMPLETE.md`
+- **Equippable Weapons**: `WeaponEquipmentManager.cs` singleton gates sword mode behind equipment slot
+- **Item Data**: `EquippableWeaponItemData.cs` extends `ChestItemData` for weapon properties
+- **World Pickup**: `WorldSwordPickup.cs` handles E key interaction (250 unit range)
+- **Equipment Slots**: Right hand weapon slot required for sword mode (left hand future-ready)
 - **Hand Animation**: `LayeredHandAnimationController.cs`
 
 ### 🤖 Companion AI

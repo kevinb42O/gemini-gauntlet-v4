@@ -40,6 +40,8 @@ namespace GeminiGauntlet.Audio
             if (IsValid)
             {
                 audioSource.Stop();
+                // CRITICAL FIX: Invalidate handle immediately to prevent race conditions
+                MarkAsInvalid();
             }
         }
 

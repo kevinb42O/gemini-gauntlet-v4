@@ -38,12 +38,16 @@ namespace GeminiGauntlet.Audio
 
         void Update()
         {
+            // CRITICAL: Early exit if already returning to pool (prevents race condition)
+            if (isReturningToPool) return;
+            
             // OPTIMIZED: Only update position if transform following is active
             if (followTransform != null)
                 transform.position = followTransform.position;
 
             // FIXED: Add null safety and prevent multiple ReturnToPool calls
-            if (isInitialized && AudioSource != null && !isReturningToPool && 
+            // Only return non-looping sounds that have finished playing
+            if (isInitialized && AudioSource != null && 
                 !AudioSource.isPlaying && !AudioSource.loop)
             {
                 ReturnToPool();
@@ -52,14 +56,18 @@ namespace GeminiGauntlet.Audio
 
         public void Stop()
         {
+            // CRITICAL FIX: Prevent race condition - set flag BEFORE doing anything
+            if (isReturningToPool) return;
+            isReturningToPool = true;
+            
             if (AudioSource != null)
             {
                 // CRITICAL: Force stop everything
                 AudioSource.loop = false; // Disable loop FIRST
                 AudioSource.Stop(); // Stop playback
                 AudioSource.clip = null; // Clear clip
-                Debug.Log($"[PooledAudioSource] FORCE STOPPED {gameObject.name} (was playing: {AudioSource.isPlaying})");
             }
+            
             ReturnToPool();
         }
 
@@ -114,8 +122,12 @@ namespace GeminiGauntlet.Audio
 
         public void ReturnToPool()
         {
-            // FIXED: Prevent multiple ReturnToPool calls
-            if (isReturningToPool) return;
+            // CRITICAL FIX: Prevent multiple ReturnToPool calls (thread-safe pattern)
+            if (isReturningToPool)
+            {
+                // Already returning to pool - this is the race condition we're protecting against
+                return;
+            }
             isReturningToPool = true;
             
             // FIXED: Add null safety check for soundSystem
@@ -125,7 +137,7 @@ namespace GeminiGauntlet.Audio
             }
             else
             {
-                Debug.LogWarning($" PooledAudioSource: soundSystem is null when trying to return {gameObject.name} to pool");
+                Debug.LogWarning($"[PooledAudioSource] soundSystem is null when trying to return {gameObject.name} to pool");
             }
         }
 

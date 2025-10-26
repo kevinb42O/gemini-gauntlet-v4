@@ -11,19 +11,25 @@ public class PlayerFootstepController : MonoBehaviour
     [Tooltip("Footstep sounds are automatically loaded from your SoundEvents asset")]
     [SerializeField] private bool useSoundEventsSystem = true;
     
-    [Header("Footstep Timing")]
-    [Tooltip("Delay between footsteps when walking (seconds)")]
-    [SerializeField] private float walkStepDelay = 0.5f;
-    [Tooltip("Delay between footsteps when sprinting (seconds)")]
-    [SerializeField] private float sprintStepDelay = 0.3f;
+    [Header("Footstep Timing - Acceleration Aware")]
+    [Tooltip("Base delay between footsteps at minimum speed (seconds)")]
+    [SerializeField] private float baseStepDelay = 0.5f;
+    [Tooltip("Minimum delay at maximum speed (seconds) - footsteps can't go faster than this")]
+    [SerializeField] private float minStepDelay = 0.25f;
+    [Tooltip("Speed at which footsteps reach minimum delay (units/sec)")]
+    [SerializeField] private float maxSpeedForTiming = 1485f; // Sprint speed
+    [Tooltip("Enable dynamic speed-based footstep timing (AAA+ feature)")]
+    [SerializeField] private bool enableDynamicTiming = true;
     
     [Header("Audio Settings")]
     [Tooltip("Volume of footstep sounds")]
     [SerializeField] private float footstepVolume = 0.7f;
     [Tooltip("Minimum movement speed to play footsteps")]
-    [SerializeField] private float minSpeedForFootsteps = 1f;
+    [SerializeField] private float minSpeedForFootsteps = 50f; // Scaled for 320-unit character
     [Tooltip("Play footsteps in random order instead of sequential")]
     [SerializeField] private bool randomizeFootsteps = true;
+    [Tooltip("Pitch variation range based on speed (0 = none, 0.2 = ±20%)")]
+    [SerializeField] private float speedPitchVariation = 0.15f;
     
     [Header("References")]
     [Tooltip("Audio source for footsteps (auto-created if null)")]
@@ -154,12 +160,12 @@ public class PlayerFootstepController : MonoBehaviour
         
         // Check if player is grounded and moving
         bool isGrounded = movementController.IsGrounded;
-        bool isMoving = movementController.CurrentSpeed > minSpeedForFootsteps;
+        float currentSpeed = movementController.CurrentSpeed;
+        bool isMoving = currentSpeed > minSpeedForFootsteps;
         
         // Check if sprinting (has sprint key held AND has energy)
         bool isSprinting = Input.GetKey(Controls.Boost) && 
-                          (energySystem == null || energySystem.CanSprint) &&
-                          movementController.CurrentSpeed > 8f;
+                          (energySystem == null || energySystem.CanSprint);
         
         // Only play footsteps when grounded and moving
         if (isGrounded && isMoving)
@@ -175,18 +181,37 @@ public class PlayerFootstepController : MonoBehaviour
                 
                 if (enableDebugLogs)
                 {
-                    Debug.Log($"[Footsteps] State changed - Moving: {isMoving}, Sprinting: {isSprinting}");
+                    Debug.Log($"[Footsteps] State changed - Moving: {isMoving}, Sprinting: {isSprinting}, Speed: {currentSpeed:F1}");
                 }
             }
             
             // Play footstep at appropriate intervals
             if (Time.time >= nextStepTime)
             {
-                PlayFootstep(isSprinting);
+                PlayFootstep(isSprinting, currentSpeed);
                 
-                // Set next step time based on movement state
-                float stepDelay = isSprinting ? sprintStepDelay : walkStepDelay;
+                // === AAA+ DYNAMIC TIMING ===
+                // Calculate step delay based on actual movement speed
+                float stepDelay;
+                if (enableDynamicTiming)
+                {
+                    // Interpolate delay between base and min based on speed
+                    // Slower movement = longer delays, faster = shorter delays
+                    float speedRatio = Mathf.Clamp01(currentSpeed / maxSpeedForTiming);
+                    stepDelay = Mathf.Lerp(baseStepDelay, minStepDelay, speedRatio);
+                }
+                else
+                {
+                    // Legacy: Use base delay for all speeds
+                    stepDelay = baseStepDelay;
+                }
+                
                 nextStepTime = Time.time + stepDelay;
+                
+                if (enableDebugLogs)
+                {
+                    Debug.Log($"[Footsteps] Speed: {currentSpeed:F1}, Delay: {stepDelay:F3}s, Next: {nextStepTime:F2}");
+                }
             }
         }
         else
@@ -204,9 +229,9 @@ public class PlayerFootstepController : MonoBehaviour
     }
     
     /// <summary>
-    /// Play a footstep sound from the array
+    /// Play a footstep sound from the array with dynamic pitch based on speed
     /// </summary>
-    private void PlayFootstep(bool isSprinting)
+    private void PlayFootstep(bool isSprinting, float currentSpeed)
     {
         if (footstepSource == null)
             return;
@@ -248,14 +273,25 @@ public class PlayerFootstepController : MonoBehaviour
         
         if (soundEvent != null && soundEvent.clip != null)
         {
+            // === AAA+ DYNAMIC PITCH ===
+            // Scale pitch with speed for natural footstep feel
+            float basePitch = 1f;
+            if (speedPitchVariation > 0f && enableDynamicTiming)
+            {
+                // Calculate pitch variation based on speed ratio
+                float speedRatio = Mathf.Clamp01(currentSpeed / maxSpeedForTiming);
+                // Range: 1.0 - variation to 1.0 + variation (e.g., 0.85 to 1.15 with 0.15 variation)
+                basePitch = 1f + (speedRatio - 0.5f) * speedPitchVariation * 2f;
+            }
+            
             // Play using the SoundEvent system (respects all settings)
-            footstepSource.pitch = 1f; // No pitch variation
+            footstepSource.pitch = basePitch;
             footstepSource.PlayOneShot(soundEvent.clip, footstepVolume * soundEvent.volume);
             
             if (enableDebugLogs)
             {
                 string soundType = isSprinting && sprintFootstepSoundEvents != null && sprintFootstepSoundEvents.Length > 0 ? "SPRINT" : "WALK";
-                Debug.Log($"[Footsteps] Playing {soundType} footstep ({soundEvent.clip.name}) - Sprint: {isSprinting}");
+                Debug.Log($"[Footsteps] {soundType} ({soundEvent.clip.name}) - Speed: {currentSpeed:F1}, Pitch: {basePitch:F2}");
             }
         }
     }
@@ -268,7 +304,8 @@ public class PlayerFootstepController : MonoBehaviour
     {
         bool isSprinting = Input.GetKey(Controls.Boost) && 
                           (energySystem == null || energySystem.CanSprint);
-        PlayFootstep(isSprinting);
+        float currentSpeed = movementController != null ? movementController.CurrentSpeed : 0f;
+        PlayFootstep(isSprinting, currentSpeed);
     }
     
     /// <summary>
