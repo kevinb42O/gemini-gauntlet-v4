@@ -2139,14 +2139,41 @@ public class AAAMovementController : MonoBehaviour
                             
                             float baseTargetSpeed = targetHorizontalVelocity.magnitude; // Combined magnitude for comparison
                             
-                            // Check if we're already going faster than base speed (from external systems like slam)
-                            if (currentSpeed > baseTargetSpeed)
+                            // 🔥 MOMENTUM THRESHOLD FIX: Raise threshold to prevent premature activation
+                            // Only trigger momentum conservation at VERY high speeds (200 units above sprint speed)
+                            // This prevents normal slope movement from triggering conservation mode
+                            float momentumThreshold = baseTargetSpeed + 200f;
+                            
+                            // Check if we're going SIGNIFICANTLY faster than base speed
+                            if (currentSpeed > momentumThreshold)
                             {
                                 // ═══════════════════════════════════════════════════════════════════
                                 // 🔥 MOMENTUM CONSERVATION - GRADUAL BRAKING & REDUCED STRAFING
                                 // ═══════════════════════════════════════════════════════════════════
+                                
+                                // 🔥 SLOPE-AWARE DIRECTION FIX: Project directions onto slope surface for accurate calculations
                                 Vector3 desiredDirection = moveDirection.normalized;
-                                Vector3 currentDirection = currentHorizontalVel.normalized;
+                                if (currentSlopeAngle > minimumSlopeAngle)
+                                {
+                                    // On slopes: Project desired direction onto slope surface
+                                    // This gives us accurate movement direction relative to terrain
+                                    desiredDirection = Vector3.ProjectOnPlane(desiredDirection, groundNormal).normalized;
+                                }
+                                
+                                // 🔥 SLOPE-AWARE VELOCITY FIX: Interpret velocity relative to slope surface
+                                Vector3 currentDirection;
+                                if (currentSlopeAngle > minimumSlopeAngle)
+                                {
+                                    // On slopes: Use slope-relative velocity for proper direction detection
+                                    // Project velocity onto slope, then flatten for horizontal comparison
+                                    Vector3 slopeRelativeVel = Vector3.ProjectOnPlane(velocity, groundNormal);
+                                    currentDirection = new Vector3(slopeRelativeVel.x, 0, slopeRelativeVel.z).normalized;
+                                }
+                                else
+                                {
+                                    // On flat ground: Use standard horizontal velocity
+                                    currentDirection = currentHorizontalVel.normalized;
+                                }
                                 
                                 // Check if player is pressing opposite to current momentum
                                 float directionAlignment = Vector3.Dot(currentDirection, desiredDirection);
