@@ -83,7 +83,7 @@ public class CleanAAACrouch : MonoBehaviour
     [Tooltip("Master toggle for SLOPE-BASED auto-slide. When OFF: NO auto-slide on steep slopes, NO auto-slide when pressing crouch on slopes. When ON: Slopes trigger slide automatically. Manual slide (crouch+sprint on flat) ALWAYS works regardless of this setting.")]
     [SerializeField] private bool enableAutoSlide = true;
     [SerializeField] private bool autoSlideOnLandingWhileCrouched = true;
-    [SerializeField] private float landingSlopeAngleForAutoSlide = 12f;
+    [SerializeField] private float landingSlopeAngleForAutoSlide = 50f; // Only auto-slide on very steep slopes (>50°), NOT on normal stairs (30-35°)
     [SerializeField] private bool autoResumeSlideFromMomentum = true;
     [SerializeField] private float landingMomentumResumeWindow = 1.2f;
     [Header("=== 🎯 LANDING MOMENTUM CONTROL ===")]
@@ -147,6 +147,10 @@ public class CleanAAACrouch : MonoBehaviour
     private bool overrideSlopeLimitDuringSlide = true;
     private float slideSlopeLimitOverride = 90f;
     private bool usePureSlopeAlignedMovement = true;
+    
+    // SMART SLOPE PROJECTION: Only project on meaningful slopes, lerp for smoothness
+    private float minSlopeForProjection = 12f; // Only project velocity on slopes >12° (ignore tiny bumps)
+    
     private bool reduceStepOffsetDuringSlide = true;
     private float slideStepOffsetOverride = 0f;
     private float stickDownWorldY = 120f; // SCALED 3x for 320-unit character (was 40)
@@ -257,7 +261,7 @@ public class CleanAAACrouch : MonoBehaviour
     private const float FLAT_GROUND_DECEL_MULTIPLIER = 1.2f; // REBALANCED: Was 1.5× - now 1.2× for smoother transitions
     
     // PHASE 3 COHERENCE FIX: Centralized slope threshold constant (was duplicated in 2 methods)
-    private const float SLOPE_ANGLE_THRESHOLD = 5f; // Flat ground (0-5°) is NOT considered a slope
+    private const float SLOPE_ANGLE_THRESHOLD = 4f; // Flat ground (0-4°) is NOT considered a slope (was 5°)
     
     // Smart steep slope detection - prevent triggering on brief wall touches
     private float steepSlopeContactStartTime = -999f;
@@ -1488,9 +1492,20 @@ public class CleanAAACrouch : MonoBehaviour
         Vector3 externalVel;
         if (usePureSlopeAlignedMovement)
         {
-            // Pure slope-aligned velocity with minimal downward bias to maintain contact
+            // 🔥 SMART PROJECTION: Only snap to slopes that matter (>12°), lerp for smoothness
+            // This prevents tiny bumps from yanking your direction around
             Vector3 slopeAligned = Vector3.ProjectOnPlane(slideVelocity, smoothedGroundNormal);
-            externalVel = slopeAligned;
+            
+            if (slopeAngle > minSlopeForProjection)
+            {
+                // Meaningful slope: gradually blend toward slope-aligned (smooth transition)
+                externalVel = Vector3.Lerp(slideVelocity, slopeAligned, projectionLerpSpeed);
+            }
+            else
+            {
+                // Flat/tiny slope: preserve momentum (don't project)
+                externalVel = slideVelocity;
+            }
             
             // JUMP FIX: Don't apply downward forces during jumps
             if (!hasUpwardVelocity)

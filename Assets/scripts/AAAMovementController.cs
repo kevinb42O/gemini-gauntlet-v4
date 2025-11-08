@@ -300,7 +300,7 @@ public class AAAMovementController : MonoBehaviour
     [Tooltip("Maximum height of stairs/steps the character can climb. Adjust this for your stair size.")]
     [SerializeField] private float maxStepHeight = 40f; // SCALED for 320-unit character (was 20)
     [Tooltip("Distance to check ahead for stairs.")]
-    [SerializeField] private float stairCheckDistance = 150f; // SCALED for 320-unit character (was 25)
+    [SerializeField] private float stairCheckDistance = 200f; // SCALED for 320-unit character - checks ~2 steps ahead
     [Tooltip("Enable advanced stair detection and climbing assistance.")]
     [SerializeField] private bool enableStairClimbingAssist = true;
     [Tooltip("Smooth step climbing to prevent jarring transitions.")]
@@ -429,6 +429,11 @@ public class AAAMovementController : MonoBehaviour
     
     private Vector3 groundNormal; // To store the normal of the ground surface
     private float currentSlopeAngle = 0f; // Current slope angle in degrees
+    
+    // Slope debug logging (to reduce log spam)
+    private bool _lastSlopeDebugLogged = false;
+    private float _lastLoggedSpeed = 0f;
+    private float _lastLoggedAngle = 0f;
     
     // Stair climbing state
     private bool isClimbingStairs = false;
@@ -1644,6 +1649,16 @@ public class AAAMovementController : MonoBehaviour
             return;
         }
         
+        // 🔥 CRITICAL FIX: Disable stair detection at high speeds
+        // If you're going 1800+ u/s, you're NOT on stairs - you're on slopes doing momentum runs!
+        // This prevents the stair system from interfering with high-speed movement and causing speed crashes
+        Vector3 currentHorizontalVelocity = new Vector3(velocity.x, 0, velocity.z);
+        if (currentHorizontalVelocity.magnitude > 1800f)
+        {
+            isClimbingStairs = false;
+            return;
+        }
+        
         // Get horizontal movement direction
         Vector3 horizontalDir = new Vector3(moveDirection.x, 0, moveDirection.z).normalized;
         if (horizontalDir.magnitude < 0.1f)
@@ -1743,18 +1758,11 @@ public class AAAMovementController : MonoBehaviour
             }
         }
         
-        // Maintain horizontal speed while climbing (with optional slowdown)
-        Vector3 horizontalVelocity = new Vector3(velocity.x, 0, velocity.z);
-        if (horizontalVelocity.magnitude > 0.1f)
-        {
-            float targetSpeed = MoveSpeed * stairClimbSpeedMultiplier;
-            if (horizontalVelocity.magnitude > targetSpeed)
-            {
-                horizontalVelocity = horizontalVelocity.normalized * targetSpeed;
-                velocity.x = horizontalVelocity.x;
-                velocity.z = horizontalVelocity.z;
-            }
-        }
+        // 🔥 NO SPEED CAP - preserve momentum while climbing stairs
+        // Removing the old speed cap allows grappling/sliding momentum to be maintained on stairs
+        // This prevents the catastrophic speed crashes that were happening when stairs capped speed
+        // Old code: Would cap speed to MoveSpeed * stairClimbSpeedMultiplier (~900 u/s)
+        // New code: Preserves full momentum (can maintain 2000-3000+ u/s through stairs)
         
         Debug.DrawLine(transform.position, topHit.point, Color.blue, 0.1f);
     }
@@ -2134,14 +2142,41 @@ public class AAAMovementController : MonoBehaviour
                             
                             float baseTargetSpeed = targetHorizontalVelocity.magnitude; // Combined magnitude for comparison
                             
-                            // Check if we're already going faster than base speed (from external systems like slam)
-                            if (currentSpeed > baseTargetSpeed)
+                            // 🔥 MOMENTUM THRESHOLD FIX: Raise threshold to prevent premature activation
+                            // Only trigger momentum conservation at VERY high speeds (200 units above sprint speed)
+                            // This prevents normal slope movement from triggering conservation mode
+                            float momentumThreshold = baseTargetSpeed + 200f;
+                            
+                            // Check if we're going SIGNIFICANTLY faster than base speed
+                            if (currentSpeed > momentumThreshold)
                             {
                                 // ═══════════════════════════════════════════════════════════════════
                                 // 🔥 MOMENTUM CONSERVATION - GRADUAL BRAKING & REDUCED STRAFING
                                 // ═══════════════════════════════════════════════════════════════════
+                                
+                                // 🔥 SLOPE-AWARE DIRECTION FIX: Project directions onto slope surface for accurate calculations
                                 Vector3 desiredDirection = moveDirection.normalized;
-                                Vector3 currentDirection = currentHorizontalVel.normalized;
+                                if (currentSlopeAngle > minimumSlopeAngle)
+                                {
+                                    // On slopes: Project desired direction onto slope surface
+                                    // This gives us accurate movement direction relative to terrain
+                                    desiredDirection = Vector3.ProjectOnPlane(desiredDirection, groundNormal).normalized;
+                                }
+                                
+                                // 🔥 SLOPE-AWARE VELOCITY FIX: Interpret velocity relative to slope surface
+                                Vector3 currentDirection;
+                                if (currentSlopeAngle > minimumSlopeAngle)
+                                {
+                                    // On slopes: Use slope-relative velocity for proper direction detection
+                                    // Project velocity onto slope, then flatten for horizontal comparison
+                                    Vector3 slopeRelativeVel = Vector3.ProjectOnPlane(velocity, groundNormal);
+                                    currentDirection = new Vector3(slopeRelativeVel.x, 0, slopeRelativeVel.z).normalized;
+                                }
+                                else
+                                {
+                                    // On flat ground: Use standard horizontal velocity
+                                    currentDirection = currentHorizontalVel.normalized;
+                                }
                                 
                                 // Check if player is pressing opposite to current momentum
                                 float directionAlignment = Vector3.Dot(currentDirection, desiredDirection);
@@ -2250,41 +2285,105 @@ public class AAAMovementController : MonoBehaviour
                                 float forwardDelta = targetForwardVel - currentForwardVel;
                                 float strafeDelta = targetStrafeVel - currentStrafeVel;
                             
-                            // Apply slope momentum if enabled (only affects forward movement)
-                            float effectiveAcceleration = groundAcceleration;
-                            if (enableSlopeMomentum && currentSlopeAngle > minimumSlopeAngle)
+                            // 🔥 UNIFIED SLOPE MOMENTUM - Apply to ANY movement direction (forward + strafe)
+                            // CRITICAL: Uses intended movement direction, not just camera forward
+                            float effectiveForwardAccel = groundAcceleration;
+                            float effectiveStrafeAccel = groundAcceleration;
+                            
+                            if (enableSlopeMomentum && currentSlopeAngle > minimumSlopeAngle && hasInput)
                             {
-                                // Calculate slope factor (-1 = downhill, +1 = uphill)
+                                // Calculate slope direction (downhill = positive direction of gravity on slope)
                                 Vector3 downhillDir = Vector3.ProjectOnPlane(Vector3.down, groundNormal).normalized;
-                                float slopeDirection = Vector3.Dot(forward, downhillDir);
                                 
-                                if (slopeDirection > 0.1f && Mathf.Abs(inputY) > 0.01f)
+                                // CRITICAL FIX: Check the ACTUAL MOVEMENT DIRECTION, not just camera axes!
+                                // Build the intended movement direction from input
+                                Vector3 intendedMoveDir = (forward * inputY + right * inputX).normalized;
+                                
+                                // Check if movement is uphill or downhill
+                                float movementSlopeAlignment = Vector3.Dot(intendedMoveDir, downhillDir);
+                                
+                                float slopeFactor = Mathf.Sin(currentSlopeAngle * Mathf.Deg2Rad);
+                                
+                                if (movementSlopeAlignment > 0.1f)
                                 {
-                                    // Moving downhill - boost acceleration (only forward)
-                                    float slopeFactor = Mathf.Sin(currentSlopeAngle * Mathf.Deg2Rad);
-                                    effectiveAcceleration *= (1f + (slopeAccelerationMultiplier * slopeFactor * slopeDirection));
+                                    // Moving downhill - boost acceleration on BOTH axes proportionally
+                                    float downhillBoost = 1f + (slopeAccelerationMultiplier * slopeFactor * movementSlopeAlignment);
+                                    effectiveForwardAccel *= downhillBoost;
+                                    effectiveStrafeAccel *= downhillBoost;
                                 }
-                                else if (slopeDirection < -0.1f && Mathf.Abs(inputY) > 0.01f)
+                                else if (movementSlopeAlignment < -0.1f)
                                 {
-                                    // Moving uphill - reduce acceleration (only forward)
-                                    float slopeFactor = Mathf.Sin(currentSlopeAngle * Mathf.Deg2Rad);
-                                    effectiveAcceleration /= (1f + (uphillFrictionMultiplier * slopeFactor * Mathf.Abs(slopeDirection)));
+                                    // Moving uphill - apply friction on BOTH axes
+                                    float uphillPenalty = 1f + (uphillFrictionMultiplier * slopeFactor * Mathf.Abs(movementSlopeAlignment));
+                                    effectiveForwardAccel /= uphillPenalty;
+                                    effectiveStrafeAccel /= uphillPenalty;
+                                    
+                                    // Apply uphill friction to BOTH deltas
+                                    float uphillFriction = uphillFrictionMultiplier * slopeFactor * Mathf.Abs(movementSlopeAlignment) * 1200f;
+                                    float frictionDecel = uphillFriction * Time.deltaTime;
+                                    float maxUphillDecel = 600f * Time.deltaTime;
+                                    frictionDecel = Mathf.Min(frictionDecel, maxUphillDecel);
+                                    
+                                    // Apply friction proportionally to each axis based on input magnitude
+                                    if (Mathf.Abs(inputY) > 0.01f)
+                                    {
+                                        float forwardFriction = frictionDecel * Mathf.Abs(inputY);
+                                        forwardDelta -= Mathf.Sign(forwardDelta) * forwardFriction;
+                                        
+                                        // Prevent acceleration uphill when already moving
+                                        if (currentSpeed > MoveSpeed * 0.1f && Mathf.Sign(forwardDelta) == Mathf.Sign(inputY))
+                                        {
+                                            forwardDelta = 0f;
+                                        }
+                                    }
+                                    
+                                    if (Mathf.Abs(inputX) > 0.01f)
+                                    {
+                                        float strafeFriction = frictionDecel * Mathf.Abs(inputX);
+                                        strafeDelta -= Mathf.Sign(strafeDelta) * strafeFriction;
+                                        
+                                        // Prevent acceleration uphill when already moving
+                                        if (currentSpeed > MoveSpeed * 0.1f && Mathf.Sign(strafeDelta) == Mathf.Sign(inputX))
+                                        {
+                                            strafeDelta = 0f;
+                                        }
+                                    }
                                 }
                             }
                             
                             // Frame-rate independent acceleration (separate for forward and strafe)
-                            float maxForwardChange = effectiveAcceleration * Time.deltaTime;
-                            float maxStrafeChange = groundAcceleration * Time.deltaTime; // Strafe uses base acceleration
+                            float maxForwardChange = effectiveForwardAccel * Time.deltaTime;
+                            float maxStrafeChange = effectiveStrafeAccel * Time.deltaTime;
                             
-                            // Clamp deltas to max acceleration
-                            if (Mathf.Abs(forwardDelta) > maxForwardChange)
+                            // 🔥 CRITICAL FIX: Clamp acceleration AND excessive deceleration
+                            // Allow uphill friction (small decel) but prevent massive speed crashes
+                            if (forwardDelta > 0)
                             {
-                                forwardDelta = Mathf.Sign(forwardDelta) * maxForwardChange;
+                                // Trying to accelerate - clamp to max acceleration
+                                if (forwardDelta > maxForwardChange)
+                                {
+                                    forwardDelta = maxForwardChange;
+                                }
                             }
+                            else if (forwardDelta < 0)
+                            {
+                                // Decelerating - allow friction BUT cap massive drops
+                                // Max deceleration: 1000 units/s (lets friction work, but prevents crashes)
+                                float maxDecel = -1000f * Time.deltaTime;
+                                if (forwardDelta < maxDecel)
+                                {
+                                    forwardDelta = maxDecel;
+                                }
+                            }
+                            
+                            // Clamp strafe delta (simpler - usually doesn't have crash issues)
                             if (Mathf.Abs(strafeDelta) > maxStrafeChange)
                             {
                                 strafeDelta = Mathf.Sign(strafeDelta) * maxStrafeChange;
                             }
+                            
+                            // 🔥 DEBUG: Track velocity before application for crash detection
+                            float preApplySpeed = new Vector3(velocity.x, 0, velocity.z).magnitude;
                             
                             // Apply acceleration on each axis independently
                             Vector3 forwardAccel = forward * forwardDelta;
@@ -2292,6 +2391,19 @@ public class AAAMovementController : MonoBehaviour
                             
                             velocity.x += forwardAccel.x + strafeAccel.x;
                             velocity.z += forwardAccel.z + strafeAccel.z;
+                            
+                            // 🔥 DEBUG: Check if velocity application caused crash
+                            float postApplySpeed = new Vector3(velocity.x, 0, velocity.z).magnitude;
+                            if (Mathf.Abs(postApplySpeed - preApplySpeed) > 500f)
+                            {
+                                Debug.Log($"[VELOCITY APPLICATION] Large change detected - PreApply: {preApplySpeed:F0} u/s, PostApply: {postApplySpeed:F0} u/s, ForwardDelta: {forwardDelta:F1}, StrafeDelta: {strafeDelta:F1}");
+                            }
+                            
+                            // 🔥 DEBUG: Detect catastrophic speed crashes
+                            if (preApplySpeed > 3000f && postApplySpeed < 1500f)
+                            {
+                                Debug.LogWarning($"[SPEED CRASH DETECTED!] Speed dropped from {preApplySpeed:F0} to {postApplySpeed:F0} u/s - ForwardDelta: {forwardDelta:F1}");
+                            }
                             }
                         }
                         else
@@ -2483,48 +2595,122 @@ public class AAAMovementController : MonoBehaviour
                     // SLOPE DESCENT SYSTEM: Apply downward force based on slope angle
                     // MAJOR FIX: Now works on ALL slopes (even 1°!) with proper force scaling
                     // IDLE FIX: Only apply slope descent when player has movement input
-                    // This prevents unwanted sliding on slopes when standing still (which triggers footsteps)
+                    // DIRECTION FIX: Only apply when moving DOWNHILL, not uphill!
                     if (currentSlopeAngle > MinimumSlopeAngle && currentSlopeAngle <= MaxSlopeAngle && hasCurrentMovementInput)
                     {
-                        // Calculate slope descent force - EXPONENTIAL CURVE for gentle slope sensitivity
-                        // Gentle slopes (1-15°) get STRONGER relative force (0.3-0.7)
-                        // Steep slopes (30-50°) get linear scaling (0.8-1.0)
-                        float slopeNormalized;
-                        if (currentSlopeAngle <= 15f)
+                        // 🐛 BUG FIX: Check if player is moving DOWNHILL or UPHILL
+                        // Calculate which direction is downhill on this slope
+                        Vector3 downhillDir = Vector3.ProjectOnPlane(Vector3.down, groundNormal).normalized;
+                        
+                        // Check if player's velocity is aligned with downhill direction
+                        Vector3 currentHorizontalVel = new Vector3(velocity.x, 0, velocity.z);
+                        float movementAlignment = Vector3.Dot(currentHorizontalVel.normalized, downhillDir);
+                        
+                        // Only apply descent force when moving downhill (positive dot product)
+                        // Threshold of 0.2 allows slight diagonal movement while still counting as "downhill"
+                        if (movementAlignment > 0.2f)
                         {
-                            // Gentle slopes: Exponential boost (0.3 baseline + angle-based growth)
-                            slopeNormalized = 0.3f + (currentSlopeAngle / 15f) * 0.4f; // 0.3 → 0.7
+                            // MOVING DOWNHILL - Apply gravity assist
+                            // Calculate slope descent force - EXPONENTIAL CURVE for gentle slope sensitivity
+                            // Gentle slopes (1-15°) get STRONGER relative force (0.3-0.7)
+                            // Steep slopes (30-50°) get linear scaling (0.8-1.0)
+                            float slopeNormalized;
+                            if (currentSlopeAngle <= 15f)
+                            {
+                                // Gentle slopes: Exponential boost (0.3 baseline + angle-based growth)
+                                slopeNormalized = 0.3f + (currentSlopeAngle / 15f) * 0.4f; // 0.3 → 0.7
+                            }
+                            else
+                            {
+                                // Steep slopes: Linear progression (0.7 → 1.0)
+                                slopeNormalized = 0.7f + ((currentSlopeAngle - 15f) / (MaxSlopeAngle - 15f)) * 0.3f;
+                            }
+                            
+                            // CRITICAL: Base force now MUCH STRONGER for 320-unit scale
+                            // Old: MoveSpeed * 0.5 = 450 units/s (too weak!)
+                            // New: MoveSpeed * 3.0 = 2700 units/s base (properly scaled!)
+                            float baseForce = MoveSpeed * 3.0f; // 3x stronger for 320-unit characters
+                            float descentPull = baseForce * slopeNormalized * Time.deltaTime;
+                            
+                            // Apply descent force along the slope surface
+                            velocity += downhillDir * descentPull;
+                            
+                            // ANTI-BOUNCE FIX: MAXIMUM FORCE stick-to-ground prevents slope bouncing at high speed
+                            // SCALED: Must overpower 3000 u/s sprint speed momentum on steep slopes
+                            float minY = Mathf.Lerp(-15f, -50f, slopeNormalized); // Gentle: -15, Steep: -50
+                            velocity.y = Mathf.Clamp(velocity.y, minY, -2000f); // MAXIMUM stick force (66% of sprint speed)
+                            
+                            // 🐛 DEBUG: Only log when speed changes significantly OR slope angle changes significantly
+                            float currentHorizSpeed = currentHorizontalVel.magnitude;
+                            if (!_lastSlopeDebugLogged || 
+                                Mathf.Abs(currentHorizSpeed - _lastLoggedSpeed) > 100f || 
+                                Mathf.Abs(currentSlopeAngle - _lastLoggedAngle) > 2f)
+                            {
+                                Debug.Log($"[⬇️ DESCENT] Angle: {currentSlopeAngle:F1}°, Speed: {currentHorizSpeed:F0} u/s, Align: {movementAlignment:F2}");
+                                _lastLoggedSpeed = currentHorizSpeed;
+                                _lastLoggedAngle = currentSlopeAngle;
+                                _lastSlopeDebugLogged = true;
+                            }
+                        }
+                        else if (movementAlignment < -0.2f)
+                        {
+                            // MOVING UPHILL - Dynamically raise slope limit based on speed
+                            // This prevents CharacterController from blocking movement on steep slopes
+                            float currentHorizSpeed = currentHorizontalVel.magnitude;
+                            
+                            // CRITICAL: Raise slope limit whenever going faster than walking speed
+                            // The faster you go, the steeper slopes you can climb
+                            if (currentHorizSpeed > 1100f)
+                            {
+                                // Fast speeds: Dramatically raise slope limit
+                                // At 1100 u/s: slopeLimit = 60°
+                                // At 2000+ u/s: slopeLimit = 89° (almost vertical!)
+                                float speedRatio = Mathf.Clamp01((currentHorizSpeed - 1100f) / 900f); // 0 at 1100, 1 at 2000
+                                float tempSlopeLimit = Mathf.Lerp(60f, 89f, speedRatio);
+                                controller.slopeLimit = tempSlopeLimit;
+                            }
+                            else
+                            {
+                                // Walking speeds: Normal slope limit + light stick force
+                                controller.slopeLimit = MaxSlopeAngle;
+                                velocity.y = Mathf.Clamp(velocity.y, -100f, 2f);
+                            }
+                            
+                            // 🐛 DEBUG: Only log when speed changes significantly OR slope angle changes significantly
+                            if (!_lastSlopeDebugLogged || 
+                                Mathf.Abs(currentHorizSpeed - _lastLoggedSpeed) > 100f || 
+                                Mathf.Abs(currentSlopeAngle - _lastLoggedAngle) > 2f)
+                            {
+                                Debug.Log($"[⬆️ ASCENT] Angle: {currentSlopeAngle:F1}°, Speed: {currentHorizSpeed:F0} u/s, Align: {movementAlignment:F2}");
+                                _lastLoggedSpeed = currentHorizSpeed;
+                                _lastLoggedAngle = currentSlopeAngle;
+                                _lastSlopeDebugLogged = true;
+                            }
                         }
                         else
                         {
-                            // Steep slopes: Linear progression (0.7 → 1.0)
-                            slopeNormalized = 0.7f + ((currentSlopeAngle - 15f) / (MaxSlopeAngle - 15f)) * 0.3f;
-                        }
-                        
-                        // CRITICAL: Base force now MUCH STRONGER for 320-unit scale
-                        // Old: MoveSpeed * 0.5 = 450 units/s (too weak!)
-                        // New: MoveSpeed * 3.0 = 2700 units/s base (properly scaled!)
-                        float baseForce = MoveSpeed * 3.0f; // 3x stronger for 320-unit characters
-                        float descentPull = baseForce * slopeNormalized * Time.deltaTime;
-                        
-                        // Apply descent force along the slope surface
-                        Vector3 slopeDirection = Vector3.ProjectOnPlane(Vector3.down, groundNormal).normalized;
-                        velocity += slopeDirection * descentPull;
-                        
-                        // ANTI-BOUNCE FIX: MAXIMUM FORCE stick-to-ground prevents slope bouncing at high speed
-                        // SCALED: Must overpower 3000 u/s sprint speed momentum on steep slopes
-                        float minY = Mathf.Lerp(-15f, -50f, slopeNormalized); // Gentle: -15, Steep: -50
-                        velocity.y = Mathf.Clamp(velocity.y, minY, -2000f); // MAXIMUM stick force (66% of sprint speed)
-                        
-                        if (showGroundingDebug && Time.frameCount % 30 == 0)
-                        {
-                            Debug.Log($"[SLOPE DESCENT] Angle: {currentSlopeAngle:F1}°, Force: {descentPull * 60:F0} u/s, Normalized: {slopeNormalized:F2}, Y-vel: {velocity.y:F1}");
+                            // MOVING PERPENDICULAR (strafing across slope) - Moderate stick force
+                            controller.slopeLimit = MaxSlopeAngle; // Restore normal slope limit
+                            velocity.y = Mathf.Clamp(velocity.y, -1000f, 2f); // Medium force for sideways movement
+                            
+                            // 🐛 DEBUG: Only log when speed changes significantly OR slope angle changes significantly
+                            float currentHorizSpeed = currentHorizontalVel.magnitude;
+                            if (!_lastSlopeDebugLogged || 
+                                Mathf.Abs(currentHorizSpeed - _lastLoggedSpeed) > 100f || 
+                                Mathf.Abs(currentSlopeAngle - _lastLoggedAngle) > 2f)
+                            {
+                                Debug.Log($"[↔️ TRAVERSE] Angle: {currentSlopeAngle:F1}°, Speed: {currentHorizSpeed:F0} u/s, Align: {movementAlignment:F2}");
+                                _lastLoggedSpeed = currentHorizSpeed;
+                                _lastLoggedAngle = currentSlopeAngle;
+                                _lastSlopeDebugLogged = true;
+                            }
                         }
                     }
                     else
                     {
                         // ANTI-BOUNCE FIX: Flat ground MAXIMUM FORCE stick
                         // Also applied when on slope but NOT moving (prevents idle slide)
+                        controller.slopeLimit = MaxSlopeAngle; // Restore normal slope limit
                         velocity.y = Mathf.Clamp(velocity.y, -2000f, 2f); // MAXIMUM stick force (66% of sprint speed)
                         
                         // DEBUG: Log when stick force is applied on flat ground
