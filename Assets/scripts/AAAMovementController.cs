@@ -2352,15 +2352,35 @@ public class AAAMovementController : MonoBehaviour
                             float maxForwardChange = effectiveForwardAccel * Time.deltaTime;
                             float maxStrafeChange = effectiveStrafeAccel * Time.deltaTime;
                             
-                            // Clamp deltas to max acceleration
-                            if (Mathf.Abs(forwardDelta) > maxForwardChange)
+                            // 🔥 CRITICAL FIX: Clamp acceleration AND excessive deceleration
+                            // Allow uphill friction (small decel) but prevent massive speed crashes
+                            if (forwardDelta > 0)
                             {
-                                forwardDelta = Mathf.Sign(forwardDelta) * maxForwardChange;
+                                // Trying to accelerate - clamp to max acceleration
+                                if (forwardDelta > maxForwardChange)
+                                {
+                                    forwardDelta = maxForwardChange;
+                                }
                             }
+                            else if (forwardDelta < 0)
+                            {
+                                // Decelerating - allow friction BUT cap massive drops
+                                // Max deceleration: 1000 units/s (lets friction work, but prevents crashes)
+                                float maxDecel = -1000f * Time.deltaTime;
+                                if (forwardDelta < maxDecel)
+                                {
+                                    forwardDelta = maxDecel;
+                                }
+                            }
+                            
+                            // Clamp strafe delta (simpler - usually doesn't have crash issues)
                             if (Mathf.Abs(strafeDelta) > maxStrafeChange)
                             {
                                 strafeDelta = Mathf.Sign(strafeDelta) * maxStrafeChange;
                             }
+                            
+                            // 🔥 DEBUG: Track velocity before application for crash detection
+                            float preApplySpeed = new Vector3(velocity.x, 0, velocity.z).magnitude;
                             
                             // Apply acceleration on each axis independently
                             Vector3 forwardAccel = forward * forwardDelta;
@@ -2368,6 +2388,19 @@ public class AAAMovementController : MonoBehaviour
                             
                             velocity.x += forwardAccel.x + strafeAccel.x;
                             velocity.z += forwardAccel.z + strafeAccel.z;
+                            
+                            // 🔥 DEBUG: Check if velocity application caused crash
+                            float postApplySpeed = new Vector3(velocity.x, 0, velocity.z).magnitude;
+                            if (Mathf.Abs(postApplySpeed - preApplySpeed) > 500f)
+                            {
+                                Debug.Log($"[VELOCITY APPLICATION] Large change detected - PreApply: {preApplySpeed:F0} u/s, PostApply: {postApplySpeed:F0} u/s, ForwardDelta: {forwardDelta:F1}, StrafeDelta: {strafeDelta:F1}");
+                            }
+                            
+                            // 🔥 DEBUG: Detect catastrophic speed crashes
+                            if (preApplySpeed > 3000f && postApplySpeed < 1500f)
+                            {
+                                Debug.LogWarning($"[SPEED CRASH DETECTED!] Speed dropped from {preApplySpeed:F0} to {postApplySpeed:F0} u/s - ForwardDelta: {forwardDelta:F1}");
+                            }
                             }
                         }
                         else
