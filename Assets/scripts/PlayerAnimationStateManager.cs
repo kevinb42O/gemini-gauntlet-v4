@@ -47,11 +47,11 @@ public class PlayerAnimationStateManager : MonoBehaviour
     private const float STATE_CHANGE_COOLDOWN = 0.05f; // Prevent spam
     private const float MANUAL_STATE_OVERRIDE_DURATION = 0.1f; // How long manual states override auto-detection
     
-    // One-shot animation tracking (Jump, Land)
+    // One-shot animation tracking (Jump only - Land no longer locks!)
     private bool isPlayingOneShotAnimation = false;
     private float oneShotAnimationEndTime = -999f;
-    private const float LAND_ANIMATION_DURATION = 0.5f; // Land animation plays for 0.5 seconds
     private const float JUMP_ANIMATION_DURATION = 0.6f; // Jump animation plays for 0.6 seconds (increased to ensure full play)
+    // REMOVED: LAND_ANIMATION_DURATION - Land shouldn't lock movement state!
     
     // Action tracking
     private Dictionary<string, float> actionCooldowns = new Dictionary<string, float>();
@@ -219,6 +219,7 @@ public class PlayerAnimationStateManager : MonoBehaviour
     
     /// <summary>
     /// Determines what the movement state should be based on all systems
+    /// OPTIMIZED: Early exits and cached checks for potato PC performance
     /// </summary>
     private PlayerAnimationState DetermineMovementState()
     {
@@ -237,13 +238,11 @@ public class PlayerAnimationStateManager : MonoBehaviour
             }
         }
         
-        // Priority order: Dive > Slide > Flight > Sprint > Walk > Falling > Idle
-        // NOTE: Jump/Land are one-shot animations handled manually with timer locks
-        // NOTE: Falling is auto-detected when airborne and not jumping/landing/diving
-        // Dive/Slide are maintained by auto-detection while their state flags are active
-        
-        // CRITICAL: Don't auto-detect dive/slide/sprint when player is in the air (except during actual dive)
+        // OPTIMIZATION: Cache IsGrounded check (prevents multiple property calls)
         bool isGrounded = movementController != null && movementController.IsGrounded;
+        
+        // Priority order: Dive > Slide > Sprint > Walk > Falling > Idle
+        // Early exits prevent unnecessary checks for potato PC performance
         
         // Dive has highest priority - if diving (actual airborne dive), always return Dive
         if (crouchController != null && crouchController.IsDiving)
@@ -253,42 +252,45 @@ public class PlayerAnimationStateManager : MonoBehaviour
         }
         
         // Slide has second priority - if sliding, always return Slide (only when grounded)
+        // OPTIMIZATION: Combined null check and property access
         if (crouchController != null && crouchController.IsSliding && isGrounded)
         {
             MarkActivity(); // Player is sliding = active
             return PlayerAnimationState.Slide;
         }
         
-        // Check for flight (flight mode is handled by external systems)
-        // We'll detect flight mode through other means or external calls
-        
         // Check for sprint - ONLY when grounded!
-        if (energySystem != null && energySystem.IsCurrentlySprinting && isGrounded)
+        // OPTIMIZATION: Early exit if not grounded (skips energy system check)
+        if (isGrounded && energySystem != null && energySystem.IsCurrentlySprinting)
         {
             MarkActivity(); // Player is sprinting = active
             return PlayerAnimationState.Sprint;
         }
         
         // Check for walk (detect movement input)
-        bool hasMovementInput = Input.GetKey(Controls.MoveForward) || Input.GetKey(Controls.MoveBackward) || 
-                               Input.GetKey(Controls.MoveLeft) || Input.GetKey(Controls.MoveRight);
-        
-        if (hasMovementInput && movementController != null && movementController.IsGrounded)
+        // OPTIMIZATION: Only check input if grounded (skips 4 Input.GetKey calls when airborne)
+        if (isGrounded)
         {
-            MarkActivity(); // Player is moving = active
-            return PlayerAnimationState.Walk;
+            bool hasMovementInput = Input.GetKey(Controls.MoveForward) || Input.GetKey(Controls.MoveBackward) || 
+                                   Input.GetKey(Controls.MoveLeft) || Input.GetKey(Controls.MoveRight);
+            
+            if (hasMovementInput)
+            {
+                MarkActivity(); // Player is moving = active
+                return PlayerAnimationState.Walk;
+            }
         }
         
-        // 🎯 NEW: Falling animation - plays when airborne and not in a one-shot animation
-        // This uses AAAMovementController.IsFalling as single source of truth
-        // Shooting layer will naturally override this (shooting layer is Override blend mode)
-        if (movementController != null && movementController.IsFalling && !isGrounded)
+        // 🎯 Falling animation - plays when airborne with delay to prevent spam on small jumps
+        // OPTIMIZATION: Only check when NOT grounded (skips property access when on ground)
+        if (!isGrounded && movementController != null && movementController.ShouldPlayFallingAnimation)
         {
             MarkActivity(); // Player is falling = active
             return PlayerAnimationState.Falling;
         }
         
         // IDLE DELAY: Only return to idle after period of inactivity
+        // OPTIMIZATION: Simple float subtraction, no property access
         float timeSinceLastActivity = Time.time - lastActivityTime;
         if (timeSinceLastActivity < idleDelayDuration)
         {
@@ -342,17 +344,14 @@ public class PlayerAnimationStateManager : MonoBehaviour
         // This prevents the Update() loop from immediately changing it back
         lastManualStateChangeTime = Time.time;
         
-        // One-shot animations (Jump, Land) need to complete before auto-detection can override
+        // One-shot animations (Jump ONLY) need to complete before auto-detection can override
+        // Land animation plays instantly but doesn't lock - allows immediate Walk/Sprint resume
         if (newState == PlayerAnimationState.Jump)
         {
             isPlayingOneShotAnimation = true;
             oneShotAnimationEndTime = Time.time + JUMP_ANIMATION_DURATION;
         }
-        else if (newState == PlayerAnimationState.Land)
-        {
-            isPlayingOneShotAnimation = true;
-            oneShotAnimationEndTime = Time.time + LAND_ANIMATION_DURATION;
-        }
+        // REMOVED: Land animation timer - it was causing 0.5s input lag after landing!
         
         // Mark activity for any non-idle state
         if (newState != PlayerAnimationState.Idle)
@@ -377,8 +376,8 @@ public class PlayerAnimationStateManager : MonoBehaviour
     
     private bool IsHighPriorityMovementState(PlayerAnimationState state)
     {
+        // OPTIMIZED: Only Jump and Dive lock state changes (Land was removed - it was stupid!)
         return state == PlayerAnimationState.Jump || 
-               state == PlayerAnimationState.Land ||
                state == PlayerAnimationState.Dive;
     }
     

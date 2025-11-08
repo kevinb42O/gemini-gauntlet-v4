@@ -13,6 +13,23 @@ using System.Collections.Generic;
 public class PlayerShooterOrchestrator : MonoBehaviour
 {
     public static PlayerShooterOrchestrator Instance { get; private set; }
+    
+    // ============================================================================
+    // SWORD MODE EVENTS - ELEGANT EVENT-DRIVEN ARCHITECTURE
+    // ============================================================================
+    
+    /// <summary>
+    /// Event fired when right hand sword mode state changes.
+    /// Subscribe to this instead of polling IsSwordModeActive!
+    /// </summary>
+    public static System.Action<bool> OnSwordModeChanged;
+    
+    /// <summary>
+    /// Event fired when left hand sword mode state changes.
+    /// Subscribe to this instead of polling IsLeftSwordModeActive!
+    /// </summary>
+    public static System.Action<bool> OnLeftSwordModeChanged;
+    
     [Header("Core References")]
     public PlayerInputHandler inputHandler;
     public HandFiringMechanics primaryHandMechanics;
@@ -327,6 +344,16 @@ public class PlayerShooterOrchestrator : MonoBehaviour
 
     void Update()
     {
+        // DEBUG VISUALIZATION: Show where emit points are aiming
+        if (leftHandEmitPoint != null)
+        {
+            Debug.DrawRay(leftHandEmitPoint.position, leftHandEmitPoint.forward * 500f, Color.cyan);
+        }
+        if (rightHandEmitPoint != null)
+        {
+            Debug.DrawRay(rightHandEmitPoint.position, rightHandEmitPoint.forward * 500f, Color.magenta);
+        }
+        
         // Sword toggle system: Hold Mouse4 (modifier) + click LMB/RMB
         // Hold Mouse4 + click LMB = Toggle LEFT hand sword
         // Hold Mouse4 + click RMB = Toggle RIGHT hand sword
@@ -1424,7 +1451,8 @@ public class PlayerShooterOrchestrator : MonoBehaviour
             }
         }
         
-        IsSwordModeActive = !IsSwordModeActive;
+        // Use method to toggle and fire event
+        SetSwordModeActive(!IsSwordModeActive);
         
         if (IsSwordModeActive)
         {
@@ -1480,6 +1508,9 @@ public class PlayerShooterOrchestrator : MonoBehaviour
                 var rightHand = _layeredHandAnimationController.rightHandController;
                 if (rightHand != null)
                 {
+                    // ⚔️ CRITICAL: Enable sword mode FIRST - this switches base layer to sword idle
+                    _layeredHandAnimationController.EnableRightHandSwordMode();
+                    
                     rightHand.TriggerSwordReveal();
                     Debug.Log("[PlayerShooterOrchestrator] 🗡️ Triggered sword reveal animation!");
                     
@@ -1516,6 +1547,9 @@ public class PlayerShooterOrchestrator : MonoBehaviour
                 var rightHand = _layeredHandAnimationController.rightHandController;
                 if (rightHand != null)
                 {
+                    // ⚔️ CRITICAL: Disable sword mode FIRST - this returns base layer to normal movement animations
+                    _layeredHandAnimationController.DisableRightHandSwordMode();
+                    
                     // Stop all overlay animations (sword attacks, etc.)
                     rightHand.ForceStopAllOverlays();
                     
@@ -1637,7 +1671,8 @@ public class PlayerShooterOrchestrator : MonoBehaviour
             }
         }
         
-        IsLeftSwordModeActive = !IsLeftSwordModeActive;
+        // Use method to toggle and fire event
+        SetLeftSwordModeActive(!IsLeftSwordModeActive);
         
         if (IsLeftSwordModeActive)
         {
@@ -1693,6 +1728,9 @@ public class PlayerShooterOrchestrator : MonoBehaviour
                 var leftHand = _layeredHandAnimationController.leftHandController;
                 if (leftHand != null)
                 {
+                    // ⚔️ CRITICAL: Enable sword mode FIRST - this switches base layer to sword idle
+                    _layeredHandAnimationController.EnableLeftHandSwordMode();
+                    
                     leftHand.TriggerSwordReveal();
                     Debug.Log("[PlayerShooterOrchestrator] 🗡️ Triggered LEFT sword reveal animation!");
                     
@@ -1729,6 +1767,9 @@ public class PlayerShooterOrchestrator : MonoBehaviour
                 var leftHand = _layeredHandAnimationController.leftHandController;
                 if (leftHand != null)
                 {
+                    // ⚔️ CRITICAL: Disable sword mode FIRST - this returns base layer to normal movement animations
+                    _layeredHandAnimationController.DisableLeftHandSwordMode();
+                    
                     // Stop all overlay animations (sword attacks, etc.)
                     leftHand.ForceStopAllOverlays();
                     
@@ -1765,8 +1806,8 @@ public class PlayerShooterOrchestrator : MonoBehaviour
         {
             Debug.Log("[PlayerShooterOrchestrator] ⚔️ Sword unequipped while active - FORCE deactivating sword mode");
             
-            // Set flag to false
-            IsSwordModeActive = false;
+            // Use event-driven setter instead of direct property assignment
+            SetSwordModeActive(false);
             
             // ⚔️ CRITICAL: Deactivate sword visual GameObject with error checking
             // This MUST work to prevent "floating sword" bug
@@ -1786,6 +1827,9 @@ public class PlayerShooterOrchestrator : MonoBehaviour
                 var rightHand = _layeredHandAnimationController.rightHandController;
                 if (rightHand != null)
                 {
+                    // ⚔️ CRITICAL: Disable sword mode - returns base layer to normal movement animations
+                    _layeredHandAnimationController.DisableRightHandSwordMode();
+                    
                     rightHand.ForceStopAllOverlays();
                     Debug.Log("[PlayerShooterOrchestrator] ✅ Stopped sword overlays on unequip");
                 }
@@ -1811,8 +1855,8 @@ public class PlayerShooterOrchestrator : MonoBehaviour
         {
             Debug.Log("[PlayerShooterOrchestrator] ⚔️ LEFT Sword unequipped while active - FORCE deactivating left sword mode");
             
-            // Set flag to false
-            IsLeftSwordModeActive = false;
+            // Use event-driven setter instead of direct property assignment
+            SetLeftSwordModeActive(false);
             
             // ⚔️ CRITICAL: Deactivate LEFT sword visual GameObject
             if (leftSwordVisualGameObject != null)
@@ -1831,12 +1875,47 @@ public class PlayerShooterOrchestrator : MonoBehaviour
                 var leftHand = _layeredHandAnimationController.leftHandController;
                 if (leftHand != null)
                 {
+                    // ⚔️ CRITICAL: Disable sword mode - returns base layer to normal movement animations
+                    _layeredHandAnimationController.DisableLeftHandSwordMode();
+                    
                     leftHand.ForceStopAllOverlays();
                     Debug.Log("[PlayerShooterOrchestrator] ✅ Stopped LEFT sword overlays on unequip");
                 }
             }
             
             Debug.Log("[PlayerShooterOrchestrator] ✅ LEFT Sword mode FORCE deactivated - ready for shooting");
+        }
+    }
+    
+    // ============================================================================
+    // SWORD MODE HELPERS - EVENT-DRIVEN PROPERTY SETTERS
+    // ============================================================================
+    
+    /// <summary>
+    /// Sets right hand sword mode state and fires event.
+    /// Use this instead of directly setting IsSwordModeActive!
+    /// </summary>
+    private void SetSwordModeActive(bool isActive)
+    {
+        if (IsSwordModeActive != isActive)
+        {
+            IsSwordModeActive = isActive;
+            OnSwordModeChanged?.Invoke(isActive);
+            Debug.Log($"[PlayerShooterOrchestrator] 🔔 Right sword mode event fired: {isActive}");
+        }
+    }
+    
+    /// <summary>
+    /// Sets left hand sword mode state and fires event.
+    /// Use this instead of directly setting IsLeftSwordModeActive!
+    /// </summary>
+    private void SetLeftSwordModeActive(bool isActive)
+    {
+        if (IsLeftSwordModeActive != isActive)
+        {
+            IsLeftSwordModeActive = isActive;
+            OnLeftSwordModeChanged?.Invoke(isActive);
+            Debug.Log($"[PlayerShooterOrchestrator] 🔔 Left sword mode event fired: {isActive}");
         }
     }
     

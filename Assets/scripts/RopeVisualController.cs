@@ -197,8 +197,9 @@ public class RopeVisualController : MonoBehaviour
         }
         
         // Get rope start/end positions
-        // ALWAYS use player center position (passed parameter) for consistency
-        Vector3 startPos = playerPosition;
+        // 🔥 FIXED: ALWAYS query hand emit point in real-time (no lag when moving fast!)
+        // Use GetRopeStartPosition() to get CURRENT hand position, not cached playerPosition
+        Vector3 startPos = GetRopeStartPosition();
         Vector3 endPos = anchor;
         
         // === PERFECT ROPE RENDERING - NO BULLSHIT ===

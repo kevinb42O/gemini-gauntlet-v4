@@ -606,7 +606,7 @@ namespace CompanionAI
                     // Something blocking view
                     if (showDebugGizmos)
                     {
-                        Debug.DrawRay(rayStart, rayDirection * hit.distance, Color.red, detectionInterval);
+                        // Debug.DrawRay removed for performance
                     }
                     continue;
                 }
@@ -615,7 +615,7 @@ namespace CompanionAI
                     // Clear line of sight on at least one ray
                     if (showDebugGizmos)
                     {
-                        Debug.DrawRay(rayStart, rayDirection * rayDistance, Color.green, detectionInterval);
+                        // Debug.DrawRay removed for performance
                     }
                     return true;
                 }

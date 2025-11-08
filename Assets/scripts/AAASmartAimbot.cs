@@ -664,8 +664,7 @@ public class AAASmartAimbot : MonoBehaviour
         Vector3 right = Quaternion.Euler(0, halfFOV, 0) * forward;
         Vector3 left = Quaternion.Euler(0, -halfFOV, 0) * forward;
         
-        Debug.DrawRay(playerCamera.transform.position, right, Color.yellow, 0.1f);
-        Debug.DrawRay(playerCamera.transform.position, left, Color.yellow, 0.1f);
+        // Debug.DrawRay removed for performance
     }
     #endregion
     

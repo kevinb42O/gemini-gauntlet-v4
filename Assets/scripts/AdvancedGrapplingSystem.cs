@@ -22,6 +22,15 @@ using GeminiGauntlet.Audio;
 /// - Gravity always applies (creates pendulum arc)
 /// - Momentum fully preserved on release
 /// - Reeling modifies constraint length, not physics behavior
+/// 
+/// TWO-WAY PHYSICS (Dynamic Rigidbodies):
+/// - Grapple to dynamic objects (rigidbodies with isKinematic = false)
+/// - Forces applied to BOTH player AND object (Newton's 3rd law)
+/// - Lighter objects get dragged/swung around by player momentum
+/// - Heavier objects resist but still move
+/// - Object naturally "throws" when released (rigidbody keeps momentum from forces)
+/// - CharacterController movement → Force application to rigidbody
+/// - NO player rigidbody required (force calculated from rope tension)
 /// </summary>
 [RequireComponent(typeof(AAAMovementController))]
 public class AdvancedGrapplingSystem : MonoBehaviour
@@ -48,16 +57,37 @@ public class AdvancedGrapplingSystem : MonoBehaviour
     [Tooltip("Add velocity in input direction while swinging (adds energy to swing)")]
     [SerializeField] private float swingInputForce = 8000f;
     
+    [Tooltip("Simple air drag applied to player while swinging (0 = PERFECT CONSERVATION, >0 = energy loss)")]
+    [Range(0f, 1f)]
+    [SerializeField] private float swingAirDrag = 0f; // 🔥 SET TO 0 FOR PERFECT PENDULUM
+    
+    [Tooltip("Additional gravity multiplier while grappling (1.0 = normal gravity, >1.0 = stronger downward force)")]
+    [Range(0.5f, 3.0f)]
+    [SerializeField] private float grapplingGravityMultiplier = 1.0f;
+    
+    [Tooltip("Only apply extra gravity when swinging downward (preserves upward momentum)")]
+    [SerializeField] private bool onlyApplyGravityWhenDescending = true;
+    
+    [Tooltip("Enable perfect pendulum energy conservation (maintains exact height on swings)")]
+    [SerializeField] private bool enablePerfectEnergyConservation = false;
+    
+    [Tooltip("Momentum preservation factor during upward swings (1.0 = perfect conservation, <1.0 = energy loss)")]
+    [Range(0.8f, 1.2f)]
+    [SerializeField] private float upwardMomentumPreservation = 1.0f;
+    
+    [Tooltip("Additional force applied along the swing arc to maintain realistic pendulum motion")]
+    [SerializeField] private float pendulumForceMultiplier = 1.0f;
+    
     [Tooltip("Centripetal force multiplier - pulls toward anchor for realistic tension")]
     [SerializeField] private float centripetalForceMultiplier = 1.2f;
     
     [Tooltip("Rope constraint snap strength (higher = harder constraint, more jitter)")]
     [Range(0.5f, 1.0f)]
-    [SerializeField] private float ropeConstraintStiffness = 0.85f;
+    [SerializeField] private float ropeConstraintStiffness = 1.0f; // 🔥 MAX for rigid constraint
     
-    [Tooltip("Velocity damping when violating rope constraint (prevents jitter)")]
+    [Tooltip("Velocity damping when violating rope constraint (0 = PERFECT CONSERVATION, >0 = energy loss)")]
     [Range(0f, 0.5f)]
-    [SerializeField] private float constraintViolationDamping = 0.15f;
+    [SerializeField] private float constraintViolationDamping = 0f; // 🔥 SET TO 0 FOR PERFECT PENDULUM - MOMENTUM KILLER!
     
     
     [Header("=== 🎣 REEL-IN SYSTEM (Hold Left Alt) ===")]
@@ -66,6 +96,10 @@ public class AdvancedGrapplingSystem : MonoBehaviour
     
     [Tooltip("Rope shortening speed (units/sec)")]
     [SerializeField] private float reelSpeed = 800f;
+    
+    [Tooltip("Reel efficiency when shortening rope. Values >1 amplify the angular momentum gain, <1 dampen it")]
+    [Range(0.1f, 2f)]
+    [SerializeField] private float reelEfficiency = 1.0f;
     
     [Tooltip("Minimum rope length during swing (enforced even if anchor is closer)")]
     [SerializeField] private float minSwingRopeLength = 750f;
@@ -127,6 +161,17 @@ public class AdvancedGrapplingSystem : MonoBehaviour
     [Range(0f, 2f)]
     [SerializeField] private float orbitalFollowStrength = 1.0f;
     
+    [Header("=== 💪 TWO-WAY PHYSICS (Dynamic Rigidbodies) ===")]
+    [Tooltip("Enable two-way physics with dynamic rigidbodies (drag/swing objects)")]
+    [SerializeField] private bool enableTwoWayPhysics = true;
+    
+    [Tooltip("Force multiplier applied to dynamic rigidbodies (based on rope tension)")]
+    [Range(0.1f, 10f)]
+    [SerializeField] private float rigidbodyForceMultiplier = 1.5f;
+    
+    [Tooltip("Max force that can be applied to rigidbodies (prevents excessive forces)")]
+    [SerializeField] private float maxRigidbodyForce = 50000f;
+    
     [Header("=== 🎨 VISUALS ===")]
     [Tooltip("Emit point for LEFT hand rope")]
     [SerializeField] private Transform leftRopeEmitPoint;
@@ -153,6 +198,7 @@ public class AdvancedGrapplingSystem : MonoBehaviour
     private AAAMovementController movementController;
     private CharacterController characterController;
     private Transform cameraTransform;
+    private LayeredHandAnimationController handAnimationController;
     
     // === ROPE STATE ENCAPSULATION (Clean dual-rope architecture) ===
     [System.Serializable]
@@ -171,11 +217,19 @@ public class AdvancedGrapplingSystem : MonoBehaviour
         public Vector3 lastAnchorWorldPosition = Vector3.zero;
         public Vector3 anchorVelocity = Vector3.zero;
         
+        // Tethered SkullEnemy reference (for ally system)
+        public SkullEnemy tetheredSkull = null;
+        
         // Legacy platform support
         public Rigidbody attachedPlatform = null;
         public Vector3 lastPlatformPosition = Vector3.zero;
         public Vector3 platformVelocity = Vector3.zero;
         public Vector3 anchorLocalOffset = Vector3.zero;
+        
+        // Two-way physics for dynamic rigidbodies
+        public Rigidbody dynamicRigidbody = null;
+        public bool isDynamicObject = false;
+        public float dynamicObjectMass = 0f;
         
         // Visuals
         public GameObject ropeLineInstance = null;
@@ -187,6 +241,11 @@ public class AdvancedGrapplingSystem : MonoBehaviour
         // Physics tracking
         public Vector3 lastFrameVelocity = Vector3.zero;
         public bool wasInWallJumpWhenAttached = false;
+        
+        // Energy conservation tracking
+        public float initialHeight = 0f;
+        public float initialKineticEnergy = 0f;
+        public float totalEnergy = 0f;
         
         public void Reset()
         {
@@ -201,6 +260,22 @@ public class AdvancedGrapplingSystem : MonoBehaviour
             anchorVelocity = Vector3.zero;
             attachedPlatform = null;
             platformVelocity = Vector3.zero;
+            
+            dynamicRigidbody = null;
+            isDynamicObject = false;
+            dynamicObjectMass = 0f;
+            
+            // Reset energy tracking
+            initialHeight = 0f;
+            initialKineticEnergy = 0f;
+            totalEnergy = 0f;
+            
+            // Release tethered skull (if any)
+            if (tetheredSkull != null)
+            {
+                tetheredSkull.OnRopeReleased();
+                tetheredSkull = null;
+            }
             
             if (ropeLineInstance != null)
             {
@@ -242,6 +317,7 @@ public class AdvancedGrapplingSystem : MonoBehaviour
         movementController = GetComponent<AAAMovementController>();
         characterController = GetComponent<CharacterController>();
         cameraTransform = Camera.main?.transform;
+        handAnimationController = GetComponent<LayeredHandAnimationController>();
         
         // Validate
         if (movementController == null || characterController == null)
@@ -249,6 +325,42 @@ public class AdvancedGrapplingSystem : MonoBehaviour
             Debug.LogError("[ADVANCED GRAPPLE] Missing required components! Disabling.", this);
             enabled = false;
             return;
+        }
+        
+        if (handAnimationController == null)
+        {
+            Debug.LogWarning("[ADVANCED GRAPPLE] LayeredHandAnimationController not found - rope animations will not play.");
+        }
+        
+        // 🔥 AUTO-DETECT HAND EMIT POINTS (if not assigned in inspector)
+        if (leftRopeEmitPoint == null || rightRopeEmitPoint == null)
+        {
+            // Find PlayerShooterOrchestrator to get emit points
+            PlayerShooterOrchestrator orchestrator = FindObjectOfType<PlayerShooterOrchestrator>();
+            if (orchestrator != null)
+            {
+                if (leftRopeEmitPoint == null)
+                {
+                    leftRopeEmitPoint = orchestrator.leftHandEmitPoint;
+                    if (leftRopeEmitPoint != null)
+                        Debug.Log($"[ADVANCED GRAPPLE] ✅ Auto-detected LEFT hand emit point: {leftRopeEmitPoint.name}");
+                    else
+                        Debug.LogWarning("[ADVANCED GRAPPLE] ⚠️ Could not find LEFT hand emit point!");
+                }
+                
+                if (rightRopeEmitPoint == null)
+                {
+                    rightRopeEmitPoint = orchestrator.rightHandEmitPoint;
+                    if (rightRopeEmitPoint != null)
+                        Debug.Log($"[ADVANCED GRAPPLE] ✅ Auto-detected RIGHT hand emit point: {rightRopeEmitPoint.name}");
+                    else
+                        Debug.LogWarning("[ADVANCED GRAPPLE] ⚠️ Could not find RIGHT hand emit point!");
+                }
+            }
+            else
+            {
+                Debug.LogWarning("[ADVANCED GRAPPLE] ⚠️ PlayerShooterOrchestrator not found! Rope will spawn from body center.");
+            }
         }
         
         // Initialize default gradient
@@ -325,13 +437,21 @@ public class AdvancedGrapplingSystem : MonoBehaviour
                 UpdateGrapplePhysics();
             }
             
-            // Update visuals for each rope
-            if (leftRope.isActive) UpdateVisuals(leftRope, leftRopeEmitPoint);
-            if (rightRope.isActive) UpdateVisuals(rightRope, rightRopeEmitPoint);
-            
             // Track velocity each frame for momentum preservation
             lastFrameVelocity = movementController.Velocity;
         }
+    }
+    
+    /// <summary>
+    /// 🔥 VISUAL FIX: Update rope visuals in LateUpdate for perfect hand tracking
+    /// LateUpdate runs AFTER all animations, so hand positions are final
+    /// This eliminates rope lag when moving fast (no more visual disconnect!)
+    /// </summary>
+    void LateUpdate()
+    {
+        // Update visuals AFTER all animations/movement finalized
+        if (leftRope.isActive) UpdateVisuals(leftRope, leftRopeEmitPoint);
+        if (rightRope.isActive) UpdateVisuals(rightRope, rightRopeEmitPoint);
     }
     
     void HandleInput()
@@ -415,10 +535,10 @@ public class AdvancedGrapplingSystem : MonoBehaviour
                 bool isMovingPlatform = hitRigidbody != null && hitRigidbody.isKinematic;
                 bool isDynamicObject = hitRigidbody != null && !hitRigidbody.isKinematic;
                 
-                // Block dynamic (physics-driven) objects, but allow kinematic (moving platforms)
-                if (isDynamicObject)
+                // Block dynamic objects ONLY if two-way physics is disabled
+                if (isDynamicObject && !enableTwoWayPhysics)
                 {
-                    Debug.Log($"[GRAPPLE {(isLeftHand ? "LEFT" : "RIGHT")}] ❌ Cannot attach to dynamic object: {hit.collider.name}");
+                    Debug.Log($"[GRAPPLE {(isLeftHand ? "LEFT" : "RIGHT")}] ❌ Cannot attach to dynamic object (two-way physics disabled): {hit.collider.name}");
                     return;
                 }
                 
@@ -434,12 +554,16 @@ public class AdvancedGrapplingSystem : MonoBehaviour
                 
                 // Pass the transform and rigidbody (if exists) for tracking
                 Rigidbody hitRb = isMovingPlatform ? hitRigidbody : null;
-                AttachGrapple(hit.point, distance, isLeftHand, inWallJump, hitRb, hit.collider.transform);
+                
+                // Pass dynamic rigidbody for two-way physics
+                Rigidbody dynamicRb = (isDynamicObject && enableTwoWayPhysics) ? hitRigidbody : null;
+                
+                AttachGrapple(hit.point, distance, isLeftHand, inWallJump, hitRb, hit.collider.transform, dynamicRb);
             }
         }
     }
     
-    void AttachGrapple(Vector3 anchor, float distance, bool isLeftHand, bool duringWallJump = false, Rigidbody platform = null, Transform hitTransform = null)
+    void AttachGrapple(Vector3 anchor, float distance, bool isLeftHand, bool duringWallJump = false, Rigidbody platform = null, Transform hitTransform = null, Rigidbody dynamicRb = null)
     {
         RopeState rope = isLeftHand ? leftRope : rightRope;
         Transform emitPoint = isLeftHand ? leftRopeEmitPoint : rightRopeEmitPoint;
@@ -458,6 +582,24 @@ public class AdvancedGrapplingSystem : MonoBehaviour
             rope.anchorVelocity = Vector3.zero;
             
             Debug.Log($"[GRAPPLE {(isLeftHand ? "LEFT" : "RIGHT")}] 🎯 Attached to: {rope.anchorTransform.name} at local position {rope.anchorLocalPosition}");
+            
+            // === SKULL TETHER SYSTEM ===
+            // Check if we hit a SkullEnemy and tether it as an ally
+            SkullEnemy skull = rope.anchorTransform.GetComponent<SkullEnemy>();
+            if (skull != null && !skull.IsDead())
+            {
+                rope.tetheredSkull = skull;
+                skull.OnRopeTethered(transform, rope); // Tell skull it's now friendly and give it rope reference
+                
+                // 🎯 SPECIAL SKULL TETHERING PHYSICS:
+                // - NO two-way physics (player wins tug-of-war, not skull!)
+                // - Rope is EXTENDABLE up to 5000 units (doesn't constrain player movement)
+                // - Skull gets pulled by rope constraint in SkullEnemy.cs
+                rope.isDynamicObject = false; // CRITICAL: Disable two-way physics so skull doesn't drag player
+                rope.dynamicRigidbody = null;
+                
+                Debug.Log($"[GRAPPLE {(isLeftHand ? "LEFT" : "RIGHT")}] 💀 Tethered SkullEnemy - PLAYER WINS TUG-OF-WAR! Extendable rope mode.");
+            }
         }
         else
         {
@@ -479,6 +621,19 @@ public class AdvancedGrapplingSystem : MonoBehaviour
         {
             rope.attachedPlatform = null;
             rope.platformVelocity = Vector3.zero;
+        }
+        
+        // === TWO-WAY PHYSICS SETUP (Dynamic rigidbodies) ===
+        rope.dynamicRigidbody = dynamicRb;
+        rope.isDynamicObject = dynamicRb != null;
+        if (rope.isDynamicObject)
+        {
+            rope.dynamicObjectMass = dynamicRb.mass;
+            Debug.Log($"[GRAPPLE {(isLeftHand ? "LEFT" : "RIGHT")}] 💪 TWO-WAY PHYSICS! Dynamic object: {hitTransform.name} (Mass: {rope.dynamicObjectMass:F1})");
+        }
+        else
+        {
+            rope.dynamicObjectMass = 0f;
         }
         
         // Initial retraction: Shorten rope by 200 units to prevent ground scraping
@@ -508,6 +663,18 @@ public class AdvancedGrapplingSystem : MonoBehaviour
             rope.lastFrameVelocity = movementController.Velocity;
         }
         
+        // === ENERGY CONSERVATION TRACKING ===
+        if (enablePerfectEnergyConservation)
+        {
+            rope.initialHeight = transform.position.y;
+            Vector3 velocity = movementController.Velocity;
+            rope.initialKineticEnergy = 0.5f * velocity.sqrMagnitude; // KE = 1/2 * m * v^2 (mass = 1 for simplicity)
+            float potentialEnergy = Physics.gravity.magnitude * rope.initialHeight; // PE = mgh
+            rope.totalEnergy = rope.initialKineticEnergy + potentialEnergy;
+            
+            Debug.Log($"[GRAPPLE {(isLeftHand ? "LEFT" : "RIGHT")}] ⚡ Energy Conservation Started - Height: {rope.initialHeight:F1}, KE: {rope.initialKineticEnergy:F1}, Total: {rope.totalEnergy:F1}");
+        }
+        
         // Spawn rope visual
         SpawnRopeVisual(rope, emitPoint);
         
@@ -519,6 +686,12 @@ public class AdvancedGrapplingSystem : MonoBehaviour
             rope.retractionSoundHandle = retractionLoopSound.PlayAttached(transform);
         }
         
+        // === PLAY ROPE ANIMATION ===
+        if (handAnimationController != null)
+        {
+            handAnimationController.PlayRopeShoot(isLeftHand);
+        }
+        
         string modeText = rope.isGroundedTether ? "GROUNDED TETHER" : "AIRBORNE SWING";
         Debug.Log($"[GRAPPLE {(isLeftHand ? "LEFT" : "RIGHT")}] ✅ {modeText}! Rope: {rope.ropeLength:F0} units (anchor {distance:F0} away)");
     }
@@ -527,6 +700,14 @@ public class AdvancedGrapplingSystem : MonoBehaviour
     {
         RopeState rope = isLeftHand ? leftRope : rightRope;
         if (!rope.isActive) return;
+        
+        // Release tethered skull BEFORE resetting rope state
+        if (rope.tetheredSkull != null)
+        {
+            rope.tetheredSkull.OnRopeReleased();
+            rope.tetheredSkull = null;
+            Debug.Log($"[GRAPPLE {(isLeftHand ? "LEFT" : "RIGHT")}] 💀 Untethered skull - Back to HOSTILE!");
+        }
         
         rope.isActive = false;
         
@@ -585,11 +766,20 @@ public class AdvancedGrapplingSystem : MonoBehaviour
         // Cleanup
         rope.Reset();
         if (grappleReleaseSound != null) grappleReleaseSound.Play3D(transform.position);
+        
+        // === STOP ROPE ANIMATION ===
+        if (handAnimationController != null)
+        {
+            handAnimationController.StopRopeAnimation(isLeftHand);
+        }
     }
     
     /// <summary>
     /// GROUNDED TETHER PHYSICS - Circular constraint movement
     /// Player can strafe/move forward but constrained to rope radius
+    /// 
+    /// 🔥 FIX: Separated reel mechanics from constraint enforcement to prevent
+    /// violent snapping when reeling in while grounded
     /// </summary>
     void UpdateGroundedTetherPhysics(RopeState rope)
     {
@@ -602,30 +792,71 @@ public class AdvancedGrapplingSystem : MonoBehaviour
             return;
         }
         
-        // === REEL-IN MODIFIER (works same in grounded mode) ===
+        // === REEL-IN SYSTEM (Grounded Mode) ===
         if (rope.isReeling && rope.ropeLength > minRopeLength)
         {
-            float shortenAmount = reelSpeed * Time.deltaTime;
-            rope.ropeLength = Mathf.Max(rope.ropeLength - shortenAmount, minRopeLength);
+            float oldLength = rope.ropeLength;
+            
+            // 🔥 FIX: Slower reel speed when grounded (prevents violent snapping)
+            // Ground friction + fast reel = accumulated constraint violations = sudden yank
+            float groundedReelSpeed = reelSpeed * 0.4f; // 40% speed when grounded for smooth feel
+            float shortenAmount = groundedReelSpeed * Time.deltaTime;
+            float newLength = Mathf.Max(oldLength - shortenAmount, minRopeLength);
+            rope.ropeLength = newLength;
+
+            // 🔥 FIX: Apply gentle inward force during grounded reel instead of relying on constraint
+            // This gives smooth continuous movement instead of sudden snaps
+            if (newLength < oldLength - 0.001f)
+            {
+                Vector3 dirToAnchor = toAnchor.normalized;
+                float reelPullForce = shortenAmount * 2f; // Gentle continuous pull
+                characterController.Move(dirToAnchor * reelPullForce * Time.deltaTime);
+                
+                // 🔥 FIX: DO NOT apply angular momentum amplification when grounded
+                // The issue: Sprint forward + shoot rope forward + reel = tangential velocity gets multiplied
+                // Angular momentum conservation is for ORBITAL motion (spinning around anchor)
+                // NOT for linear motion (running forward)
+                // 
+                // When grounded, player is walking/running, not swinging in pendulum arc
+                // Applying ratio amplification to linear movement = speed multiplication bug
+                //
+                // Solution: Only preserve direction, don't amplify magnitude when grounded
+                Vector3 currentVelocity = movementController.Velocity;
+                Vector3 tangential = currentVelocity - dirToAnchor * Vector3.Dot(currentVelocity, dirToAnchor);
+                if (tangential.magnitude > 0.001f)
+                {
+                    // Keep tangential direction but don't amplify speed (grounded = no pendulum physics)
+                    // Only apply gentle redirection toward anchor, preserving sprint speed
+                    Vector3 adjusted = currentVelocity.normalized * currentVelocity.magnitude;
+                    movementController.SetExternalVelocity(adjusted, Time.deltaTime * 2f, false);
+                }
+            }
         }
         
-        // === CIRCULAR CONSTRAINT - Prevent moving beyond rope radius ===
-        if (currentDistance > rope.ropeLength)
+        // === CIRCULAR CONSTRAINT - Only enforce when NOT actively reeling ===
+        // 🔥 FIX: Disable harsh constraint correction during reel to prevent force accumulation
+        if (!rope.isReeling && currentDistance > rope.ropeLength)
         {
             Vector3 directionToAnchor = toAnchor.normalized;
             float overshoot = currentDistance - rope.ropeLength;
-            
+
+            // Soft positional correction to avoid snapping
             Vector3 correction = directionToAnchor * (overshoot * groundTetherConstraintStiffness);
-            characterController.Move(correction);
-            
+            characterController.Move(correction * 0.9f);
+
             Vector3 currentVelocity = movementController.Velocity;
-            
+
             float velocityAwayFromAnchor = Vector3.Dot(currentVelocity, -directionToAnchor);
             if (velocityAwayFromAnchor > 0f)
             {
-                Vector3 velocityToRemove = -directionToAnchor * velocityAwayFromAnchor;
-                currentVelocity -= velocityToRemove;
-                
+                // Remove outward velocity component without damping (perfect conservation)
+                Vector3 outwardComp = -directionToAnchor * velocityAwayFromAnchor;
+                currentVelocity -= outwardComp;
+
+                // Apply a small spring impulse to pull player back toward anchor
+                Vector3 springImpulse = -directionToAnchor * (overshoot * groundTetherConstraintStiffness * 0.5f);
+                currentVelocity += springImpulse * Time.deltaTime;
+
                 movementController.SetExternalVelocity(currentVelocity, Time.deltaTime * 2f, false);
             }
         }
@@ -633,25 +864,23 @@ public class AdvancedGrapplingSystem : MonoBehaviour
     
     void UpdateGrapplePhysics()
     {
-        Vector3 currentVelocity = movementController.Velocity;
-        Vector3 totalConstraintForce = Vector3.zero;
-        Vector3 totalCentripetalForce = Vector3.zero;
-        Vector3 totalInputForce = Vector3.zero;
-        Vector3 totalOrbitalForce = Vector3.zero;
+        // 🔥 SIMPLE APPROACH: Let AAAMovementController handle ALL gravity and physics
+        // Rope system ONLY applies constraint forces (like a real rope would)
         
-        // Process each active rope independently and accumulate forces
+        Vector3 currentVelocity = movementController.Velocity;
+        
+        // Process each active rope independently - ONLY apply constraint forces
         if (leftRope.isActive)
         {
-            ProcessRopePhysics(leftRope, ref currentVelocity, ref totalConstraintForce, ref totalCentripetalForce, ref totalInputForce, ref totalOrbitalForce);
+            ApplyRopeConstraint(leftRope, ref currentVelocity);
         }
         
         if (rightRope.isActive)
         {
-            ProcessRopePhysics(rightRope, ref currentVelocity, ref totalConstraintForce, ref totalCentripetalForce, ref totalInputForce, ref totalOrbitalForce);
+            ApplyRopeConstraint(rightRope, ref currentVelocity);
         }
         
-        // Apply combined forces
-        currentVelocity += totalCentripetalForce + totalInputForce + totalOrbitalForce;
+        // Set the constrained velocity - let AAAMovementController handle everything else
         movementController.SetExternalVelocity(currentVelocity, Time.deltaTime * 2f, false);
         
         // Update per-rope state
@@ -659,6 +888,196 @@ public class AdvancedGrapplingSystem : MonoBehaviour
         if (rightRope.isActive) rightRope.lastFrameVelocity = currentVelocity;
     }
     
+    /// <summary>
+    /// SIMPLE ROPE CONSTRAINT - Enforces rope length + centripetal force for tight swings
+    /// Based on proven implementations that work WITH CharacterController physics
+    /// SPECIAL: For skull tethering, rope extends dynamically up to 5000 units
+    /// 
+    /// 🔥 RESTORED: Centripetal force for responsive arc control (Option A)
+    /// </summary>
+    void ApplyRopeConstraint(RopeState rope, ref Vector3 currentVelocity)
+    {
+        Vector3 toAnchor = rope.anchor - transform.position;
+        float currentDistance = toAnchor.magnitude;
+        
+        if (currentDistance < 0.1f)
+        {
+            ReleaseGrapple(rope == leftRope);
+            return;
+        }
+        
+        Vector3 directionToAnchor = toAnchor.normalized;
+        
+        // === SKULL TETHER SPECIAL BEHAVIOR ===
+        // Rope extends dynamically as player moves away (up to 5000 units max)
+        // Skull gets pulled by its own rope constraint system (in SkullEnemy.cs)
+        if (rope.tetheredSkull != null && !rope.tetheredSkull.IsDead())
+        {
+            float maxSkullRopeLength = 5000f; // Max tether distance
+            
+            // Allow rope to extend as player moves away
+            if (currentDistance > rope.ropeLength)
+            {
+                rope.ropeLength = Mathf.Min(currentDistance, maxSkullRopeLength);
+            }
+            
+            // Only constrain if beyond maximum
+            if (currentDistance > maxSkullRopeLength)
+            {
+                float overshoot = currentDistance - maxSkullRopeLength;
+                Vector3 correction = directionToAnchor * overshoot;
+                characterController.Move(correction);
+                
+                // Remove outward velocity
+                float velocityAwayFromAnchor = Vector3.Dot(currentVelocity, -directionToAnchor);
+                if (velocityAwayFromAnchor > 0f)
+                {
+                    Vector3 outwardComponent = -directionToAnchor * velocityAwayFromAnchor;
+                    currentVelocity -= outwardComponent;
+                }
+            }
+            
+            // Skull tethering doesn't constrain player movement - player is free!
+            return;
+        }
+        
+        // === NORMAL ROPE SWING BEHAVIOR ===
+        // === REEL-IN MODIFIER (with angular momentum conservation) ===
+        if (rope.isReeling && rope.ropeLength > minRopeLength)
+        {
+            float oldLength = rope.ropeLength;
+            float shortenAmount = reelSpeed * Time.deltaTime;
+            float newLength = Mathf.Max(oldLength - shortenAmount, minRopeLength);
+            rope.ropeLength = newLength;
+            
+            // 🔥 RESTORED: Angular momentum conservation during reel (figure skater effect)
+            if (newLength < oldLength - 0.001f)
+            {
+                float radialVelocity = Vector3.Dot(currentVelocity, directionToAnchor);
+                Vector3 tangentialVelocity = currentVelocity - directionToAnchor * radialVelocity;
+                
+                if (tangentialVelocity.magnitude > 0.001f)
+                {
+                    // L = mvr conservation: when r decreases, v increases
+                    float ratio = Mathf.Clamp((oldLength / newLength) * reelEfficiency, 0.5f, 4f);
+                    Vector3 amplifiedTangential = tangentialVelocity * ratio;
+                    currentVelocity = directionToAnchor * radialVelocity + amplifiedTangential;
+                }
+            }
+        }
+        
+        // === ROPE LENGTH CONSTRAINT ===
+        if (currentDistance > rope.ropeLength)
+        {
+            // Snap position to rope length
+            float overshoot = currentDistance - rope.ropeLength;
+            Vector3 correction = directionToAnchor * (overshoot * ropeConstraintStiffness);
+            characterController.Move(correction);
+            
+            // Remove velocity component that would take you away from anchor
+            float velocityAwayFromAnchor = Vector3.Dot(currentVelocity, -directionToAnchor);
+            if (velocityAwayFromAnchor > 0f)
+            {
+                Vector3 outwardComponent = -directionToAnchor * velocityAwayFromAnchor;
+                
+                // Apply constraint violation damping (0 = perfect conservation)
+                currentVelocity -= outwardComponent * (1f - constraintViolationDamping);
+            }
+            
+            // Update position after constraint
+            toAnchor = rope.anchor - transform.position;
+            currentDistance = toAnchor.magnitude;
+            directionToAnchor = toAnchor.normalized;
+        }
+        
+        // === 🔥 CENTRIPETAL FORCE - RESTORED (This is what your multiplier controls!) ===
+        // This pulls you toward the anchor during circular motion (tighter arc control)
+        if (currentDistance > 0.1f && centripetalForceMultiplier > 0f)
+        {
+            // Calculate tangential velocity (perpendicular to rope)
+            Vector3 tangentialVelocity = currentVelocity - directionToAnchor * Vector3.Dot(currentVelocity, directionToAnchor);
+            float tangentialSpeed = tangentialVelocity.magnitude;
+            
+            if (tangentialSpeed > 0.01f)
+            {
+                // Centripetal acceleration: a = v² / r
+                float centripetalAccel = (tangentialSpeed * tangentialSpeed) / Mathf.Max(currentDistance, 0.0001f);
+                
+                // Apply your multiplier here!
+                Vector3 centripetalForce = directionToAnchor * centripetalAccel * centripetalForceMultiplier * Time.deltaTime;
+                
+                // Safety clamp to prevent extreme values
+                centripetalForce = Vector3.ClampMagnitude(centripetalForce, 2000f * Time.deltaTime);
+                
+                currentVelocity += centripetalForce;
+            }
+        }
+        
+        // === 🔥 PENDULUM FORCE - RESTORED (Gravity component along swing arc) ===
+        // This creates natural pendulum acceleration (faster at bottom, slower at top)
+        if (currentDistance > 0.1f && pendulumForceMultiplier > 0f)
+        {
+            // Calculate tangential gravity component (perpendicular to rope)
+            Vector3 gravityDirection = Vector3.down;
+            Vector3 tangentialGravity = gravityDirection - directionToAnchor * Vector3.Dot(gravityDirection, directionToAnchor);
+            
+            // Apply gravity along the swing arc (creates natural pendulum motion)
+            Vector3 pendulumForce = tangentialGravity * Physics.gravity.magnitude * pendulumForceMultiplier * Time.deltaTime;
+            
+            currentVelocity += pendulumForce;
+        }
+        
+        // === UPWARD MOMENTUM PRESERVATION ===
+        // Adjust energy gain/loss during upward swings
+        if (currentVelocity.y > 0f && upwardMomentumPreservation != 1.0f)
+        {
+            Vector3 upwardComponent = Vector3.up * Mathf.Max(0f, currentVelocity.y);
+            Vector3 adjustedUpward = upwardComponent * upwardMomentumPreservation;
+            Vector3 horizontalComponent = currentVelocity - Vector3.up * currentVelocity.y;
+            currentVelocity = horizontalComponent + adjustedUpward;
+        }
+        
+        // === 🔥 PLAYER INPUT - RESTORED (Swing steering with your air control settings!) ===
+        float inputX = Controls.HorizontalRaw();
+        float inputY = Controls.VerticalRaw();
+        
+        if (Mathf.Abs(inputX) > 0.01f || Mathf.Abs(inputY) > 0.01f)
+        {
+            // Get camera-relative input direction
+            Vector3 cameraForward = cameraTransform != null ? cameraTransform.forward : transform.forward;
+            Vector3 cameraRight = cameraTransform != null ? cameraTransform.right : transform.right;
+            cameraForward.y = 0;
+            cameraRight.y = 0;
+            cameraForward.Normalize();
+            cameraRight.Normalize();
+            
+            Vector3 inputDirection = (cameraForward * inputY + cameraRight * inputX).normalized;
+            
+            // Apply swing input force (now your swingInputForce slider works!)
+            Vector3 swingForce = inputDirection * swingInputForce * Time.deltaTime;
+            
+            // Project force to be tangential to rope (can't pull toward/away from anchor)
+            Vector3 tangentialForce = swingForce - directionToAnchor * Vector3.Dot(swingForce, directionToAnchor);
+            
+            // Dynamic air control - reduces at high speeds for more momentum-based feel
+            float speedFactor = Mathf.Clamp01(currentVelocity.magnitude / 3000f);
+            float dynamicAirControl = Mathf.Lerp(swingAirControl, swingAirControl * 0.6f, speedFactor);
+            
+            // Apply controlled input force (now your swingAirControl slider works!)
+            currentVelocity += tangentialForce * dynamicAirControl;
+        }
+        
+        // === 🔥 AIR DRAG - RESTORED (Your swing air drag slider is now active!) ===
+        if (swingAirDrag > 0f)
+        {
+            // Simple velocity damping (0 = no drag, 1 = instant stop)
+            currentVelocity *= (1f - swingAirDrag * Time.deltaTime);
+        }
+    }
+    
+    /// <summary>
+    /// DEPRECATED - Old complex system that fought against AAAMovementController
+    /// </summary>
     void ProcessRopePhysics(RopeState rope, ref Vector3 currentVelocity, ref Vector3 totalConstraintForce, ref Vector3 totalCentripetalForce, ref Vector3 totalInputForce, ref Vector3 totalOrbitalForce)
     {
         Vector3 toAnchor = rope.anchor - transform.position;
@@ -675,23 +1094,51 @@ public class AdvancedGrapplingSystem : MonoBehaviour
         // === REEL-IN MODIFIER ===
         if (rope.isReeling && rope.ropeLength > minRopeLength)
         {
+            float oldLength = rope.ropeLength;
             float shortenAmount = reelSpeed * Time.deltaTime;
-            rope.ropeLength = Mathf.Max(rope.ropeLength - shortenAmount, minRopeLength);
+            float newLength = Mathf.Max(oldLength - shortenAmount, minRopeLength);
+            rope.ropeLength = newLength;
+
+            // Preserve angular momentum: scale tangential velocity when radius shortens
+            if (newLength < oldLength - 0.001f)
+            {
+                Vector3 dir = directionToAnchor = toAnchor.normalized; // ensure direction is set
+                float along = Vector3.Dot(currentVelocity, dir);
+                Vector3 tangential = currentVelocity - dir * along;
+
+                if (tangential.magnitude > 0.001f)
+                {
+                    float ratio = Mathf.Clamp((oldLength / newLength) * reelEfficiency, 0.5f, 4f);
+                    Vector3 newTangential = tangential * ratio;
+                    currentVelocity = dir * along + newTangential;
+                }
+            }
         }
         
         // === ROPE CONSTRAINT ===
         if (currentDistance > rope.ropeLength)
         {
             float overshoot = currentDistance - rope.ropeLength;
-            Vector3 correction = directionToAnchor * (overshoot * ropeConstraintStiffness);
-            characterController.Move(correction);
             
+            // 🔥 PERFECT CONSERVATION FIX: Only redirect velocity, don't dampen it
+            Vector3 correction = directionToAnchor * overshoot;
+            characterController.Move(correction); // Snap to rope length (no partial correction)
+
+            // Remove outward velocity component but preserve TOTAL SPEED (conservation)
             float velocityAwayFromAnchor = Vector3.Dot(currentVelocity, -directionToAnchor);
             if (velocityAwayFromAnchor > 0f)
             {
-                currentVelocity -= (-directionToAnchor) * velocityAwayFromAnchor * (1f - constraintViolationDamping);
+                // 🔥 CRITICAL FIX: Perfect energy conservation - redirect velocity tangentially
+                Vector3 outwardComponent = -directionToAnchor * velocityAwayFromAnchor;
+                
+                // Remove outward component completely (redirect to tangential)
+                currentVelocity -= outwardComponent;
+                
+                // 🚫 REMOVED DOUBLE DAMPING - this was killing momentum!
+                // The constraint violation damping was being applied AFTER already removing the component
+                // This was causing 60-70% energy loss instead of perfect conservation
             }
-            
+
             toAnchor = rope.anchor - transform.position;
             currentDistance = toAnchor.magnitude;
             directionToAnchor = toAnchor.normalized;
@@ -702,14 +1149,47 @@ public class AdvancedGrapplingSystem : MonoBehaviour
         {
             Vector3 tangentialVelocity = currentVelocity - directionToAnchor * Vector3.Dot(currentVelocity, directionToAnchor);
             float tangentialSpeed = tangentialVelocity.magnitude;
-            
-            if (tangentialSpeed > 100f)
+
+            if (tangentialSpeed > 0.01f)
             {
-                float centripetalForce = (tangentialSpeed * tangentialSpeed) / currentDistance;
-                Vector3 centripetalAcceleration = directionToAnchor * centripetalForce * centripetalForceMultiplier * Time.deltaTime;
+                // realistic centripetal acceleration: a = v^2 / r
+                float centripetal = (tangentialSpeed * tangentialSpeed) / Mathf.Max(currentDistance, 0.0001f);
+                Vector3 centripetalAcceleration = directionToAnchor * centripetal * centripetalForceMultiplier * Time.deltaTime;
+                // clamp to avoid extreme numbers
+                centripetalAcceleration = Vector3.ClampMagnitude(centripetalAcceleration, 2000f * Time.deltaTime);
                 totalCentripetalForce += centripetalAcceleration;
             }
         }
+        
+        // === IMPROVED PENDULUM PHYSICS ===
+        // 🚫 DISABLED - This was adding complexity that interfered with natural momentum
+        // The rope constraint + centripetal force is sufficient for realistic pendulum motion
+        /*
+        // Add realistic pendulum forces based on gravity and rope angle
+        if (pendulumForceMultiplier > 0f && currentDistance > 0.1f)
+        {
+            Vector3 toAnchorNormalized = directionToAnchor;
+            Vector3 gravityDirection = Vector3.down;
+            
+            // Calculate the component of gravity perpendicular to the rope (tangential force)
+            Vector3 tangentialGravity = gravityDirection - toAnchorNormalized * Vector3.Dot(gravityDirection, toAnchorNormalized);
+            
+            // This creates the natural pendulum restoring force
+            Vector3 pendulumForce = tangentialGravity * Physics.gravity.magnitude * pendulumForceMultiplier * Time.deltaTime;
+            
+            // Apply momentum preservation for upward swings
+            if (currentVelocity.y > 0f && upwardMomentumPreservation != 1.0f)
+            {
+                // Adjust upward momentum based on preservation factor
+                Vector3 upwardComponent = Vector3.up * Mathf.Max(0f, currentVelocity.y);
+                Vector3 adjustedUpward = upwardComponent * upwardMomentumPreservation;
+                Vector3 horizontalComponent = currentVelocity - upwardComponent;
+                currentVelocity = horizontalComponent + adjustedUpward;
+            }
+            
+            totalCentripetalForce += pendulumForce;
+        }
+        */
         
         // === PLAYER INPUT (Swing steering) ===
         float inputX = Controls.HorizontalRaw();
@@ -749,8 +1229,37 @@ public class AdvancedGrapplingSystem : MonoBehaviour
                 Vector3 orbitalAcceleration = tangentialAnchorMotion.normalized * orbitalForce;
                 
                 totalOrbitalForce += orbitalAcceleration;
-                Debug.DrawRay(transform.position, orbitalAcceleration * 10f, Color.cyan);
+                // Debug.DrawRay removed for performance
             }
+        }
+        
+        // === TWO-WAY PHYSICS (Apply opposite forces to dynamic rigidbodies) ===
+        if (rope.isDynamicObject && rope.dynamicRigidbody != null && enableTwoWayPhysics)
+        {
+            // Calculate total force being applied to player
+            Vector3 totalPlayerForce = totalCentripetalForce + totalInputForce + totalOrbitalForce;
+            
+            // Calculate constraint force from rope tension
+            Vector3 constraintForce = Vector3.zero;
+            if (currentDistance > rope.ropeLength)
+            {
+                float overshoot = currentDistance - rope.ropeLength;
+                constraintForce = -directionToAnchor * (overshoot * ropeConstraintStiffness * 15000f);
+            }
+            
+            // Total force = constraint + swing forces
+            Vector3 totalForce = constraintForce + (totalPlayerForce * 10000f);
+            
+            // Apply opposite force to rigidbody (Newton's 3rd law)
+            Vector3 rigidbodyForce = -totalForce * rigidbodyForceMultiplier;
+            
+            // Clamp to prevent excessive forces
+            rigidbodyForce = Vector3.ClampMagnitude(rigidbodyForce, maxRigidbodyForce);
+            
+            // Apply force at the anchor point for realistic torque
+            rope.dynamicRigidbody.AddForceAtPosition(rigidbodyForce, rope.anchor, ForceMode.Force);
+            
+            // Visual debug removed for performance
         }
     }
     
@@ -769,7 +1278,7 @@ public class AdvancedGrapplingSystem : MonoBehaviour
             
             if (rope.anchorVelocity.magnitude > 1f)
             {
-                Debug.DrawRay(rope.anchor, rope.anchorVelocity.normalized * 100f, Color.magenta);
+                // Debug.DrawRay removed for performance
             }
             
             return;
@@ -802,13 +1311,16 @@ public class AdvancedGrapplingSystem : MonoBehaviour
     {
         if (ropeLinePrefab != null)
         {
-            rope.ropeLineInstance = Instantiate(ropeLinePrefab, transform.position, Quaternion.identity);
+            // 🔥 FIXED: Parent to emit point for PERFECT hand tracking (just like beam particles!)
+            // This ensures the LineRenderer GameObject follows the hand with ZERO lag
+            Transform parent = emitPoint != null ? emitPoint : transform;
+            rope.ropeLineInstance = Instantiate(ropeLinePrefab, parent.position, Quaternion.identity, parent);
             rope.lineRenderer = rope.ropeLineInstance.GetComponent<LineRenderer>();
             
             if (rope.lineRenderer != null)
             {
                 rope.lineRenderer.positionCount = 2;
-                rope.lineRenderer.useWorldSpace = true;
+                rope.lineRenderer.useWorldSpace = true; // CRITICAL: World space so positions work correctly
                 rope.lineRenderer.startWidth = ropeWidth;
                 rope.lineRenderer.endWidth = ropeWidth;
             }
@@ -819,6 +1331,7 @@ public class AdvancedGrapplingSystem : MonoBehaviour
     {
         if (rope.lineRenderer != null)
         {
+            // Use emit point if assigned, otherwise fallback to body center
             Vector3 ropeStart = emitPoint != null ? emitPoint.position : 
                                (transform.position + Vector3.up * (characterController.height * 0.5f));
             

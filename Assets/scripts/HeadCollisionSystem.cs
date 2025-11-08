@@ -44,7 +44,6 @@ public class HeadCollisionSystem : MonoBehaviour
     
     // Runtime state
     private float lastCollisionTime = -999f;
-    private Vector3 lastVelocity = Vector3.zero;
     
     // Constants
     private const float CEILING_ANGLE_THRESHOLD = 60f; // Surfaces less than 60° from straight down = ceiling
@@ -113,17 +112,9 @@ public class HeadCollisionSystem : MonoBehaviour
         Debug.Log("[HEAD COLLISION] ✅ System initialized successfully");
     }
     
-    void Update()
-    {
-        // Track velocity every frame for collision detection
-        if (movementController != null)
-        {
-            lastVelocity = movementController.Velocity;
-        }
-    }
-    
     /// <summary>
     /// CharacterController collision callback - detects head collisions
+    /// CRITICAL FIX: Get velocity at collision time, not from Update() tracking
     /// </summary>
     void OnControllerColliderHit(ControllerColliderHit hit)
     {
@@ -134,8 +125,13 @@ public class HeadCollisionSystem : MonoBehaviour
         if (Time.time - lastCollisionTime < config.collisionCooldown)
             return;
         
+        // ✅ CRITICAL FIX: Get velocity at the EXACT moment of collision
+        // Use movementController.Velocity (real-time) instead of lastVelocity (stale)
+        // This ensures we capture the velocity during wall jumps, double jumps, etc.
+        Vector3 currentVelocity = movementController != null ? movementController.Velocity : controller.velocity;
+        
         // Only process if moving upward
-        if (lastVelocity.y <= 0f)
+        if (currentVelocity.y <= 0f)
             return;
         
         // Check if we hit a ceiling (surface pointing mostly downward)
@@ -146,18 +142,11 @@ public class HeadCollisionSystem : MonoBehaviour
             return; // Not a ceiling collision
         
         // Calculate collision velocity (upward component)
-        float upwardVelocity = Mathf.Abs(lastVelocity.y);
+        float upwardVelocity = Mathf.Abs(currentVelocity.y);
         
         // Check minimum velocity threshold
         if (upwardVelocity < config.minVelocityThreshold)
             return; // Impact too weak to register
-        
-        // Check collision angle (must be moving mostly upward)
-        Vector3 velocityDirection = lastVelocity.normalized;
-        float velocityAngleFromUp = Vector3.Angle(velocityDirection, Vector3.up);
-        
-        if (velocityAngleFromUp > config.headCollisionAngleThreshold)
-            return; // Not moving upward enough (probably sliding along ceiling)
         
         // VALID HEAD COLLISION DETECTED!
         ProcessHeadCollision(hit, upwardVelocity);
@@ -298,8 +287,9 @@ public class HeadCollisionSystem : MonoBehaviour
             currentVelocity += pushVelocity;
         }
         
-        // Apply modified velocity to movement controller
-        movementController.SetVelocity(currentVelocity);
+        // ✅ CRITICAL FIX: Use SetVelocityImmediate with priority=2 to override wall jump protection!
+        // Without priority, wall jumps/double jumps protect their velocity and block the bounce
+        movementController.SetVelocityImmediate(currentVelocity, priority: 2);
         
         if (config.showDebugLogs)
         {
@@ -350,8 +340,9 @@ public class HeadCollisionSystem : MonoBehaviour
         // Combine bounce and tangential velocity
         Vector3 finalVelocity = bounceVelocity + tangentialVelocity;
         
-        // Apply to movement controller
-        movementController.SetVelocity(finalVelocity);
+        // ✅ CRITICAL FIX: Use SetVelocityImmediate with priority=2 to override wall jump protection!
+        // Rope collisions need immediate response even during wall jump protection window
+        movementController.SetVelocityImmediate(finalVelocity, priority: 2);
         
         if (config.showDebugLogs)
         {
@@ -362,10 +353,7 @@ public class HeadCollisionSystem : MonoBehaviour
         // Debug visualization
         if (config.showDebugRays)
         {
-            Debug.DrawRay(transform.position, surfaceNormal * 100f, Color.red, 1f); // Surface normal
-            Debug.DrawRay(transform.position, toAnchor * 100f, Color.yellow, 1f); // To anchor
-            Debug.DrawRay(transform.position, bounceDirection * 100f, Color.cyan, 1f); // Blended bounce
-            Debug.DrawRay(transform.position, finalVelocity.normalized * 100f, Color.green, 1f); // Final velocity
+            // Debug.DrawRay removed for performance
         }
     }
     

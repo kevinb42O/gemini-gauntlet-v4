@@ -87,6 +87,15 @@ public class TowerController : MonoBehaviour
     protected const float EMERGENCE_WAIT_TIME = 1f;
     protected bool _isFirstDanceMove = true; // Track if this is the first move after emergence
     
+    // 🎯 WALL AVOIDANCE FOR EXTREMELY LARGE WORLDS
+    [Header("Wall Avoidance (Large World Scale)")]
+    [Tooltip("Radius for sphere collision detection - should match tower's approximate size")]
+    public float towerCollisionRadius = 50f; // Default for large scale worlds
+    [Tooltip("How far ahead to look for obstacles (units)")]
+    public float wallDetectionLookahead = 500f; // Check 500 units ahead
+    [Tooltip("Minimum movement threshold to trigger wall checks (units/frame)")]
+    public float minMovementForWallCheck = 1f; // Check even small movements in large worlds
+    
     // Skull spawn spin animation
     protected bool _isSpinningForSkullSpawn = false;
     protected float _currentSpinSpeed = 0f;
@@ -465,6 +474,13 @@ public class TowerController : MonoBehaviour
         // FIXED: Respect inspector settings and enforce platform detection
         if (_skullSpawningEnabled && HasValidSkullTypes() && skullSpawnPoints.Length > 0)
         {
+            // 🎯 PRIORITY 1: Check global skull cap BEFORE checking tower-specific limits
+            if (!SkullEnemyManager.CanSpawnSkull())
+            {
+                // Global cap reached - don't spawn skulls from any tower
+                return;
+            }
+            
             // FIXED: First ensure we have not exceeded max skull count from inspector
             _activeSkulls.RemoveAll(s => s == null); // Clean up null references
             if (_activeSkulls.Count >= maxActiveSkullsPerTower)
@@ -684,8 +700,9 @@ public class TowerController : MonoBehaviour
             Vector3 worldCandidatePosition = transform.parent != null ? 
                 transform.parent.TransformPoint(candidatePosition) : candidatePosition;
             
-            // Check if position is within platform bounds (with a safety margin)
-            float safetyMargin = 2f; // Stay 2 units away from edges
+            // Check if position is within platform bounds (with large safety margin for big worlds)
+            // For 3000x3000 platforms, we want significant margin to avoid edge cases
+            float safetyMargin = 200f; // Stay 200 units away from edges (scaled for large world)
             bool withinBounds = 
                 worldCandidatePosition.x >= platformBounds.min.x + safetyMargin &&
                 worldCandidatePosition.x <= platformBounds.max.x - safetyMargin &&
@@ -697,18 +714,43 @@ public class TowerController : MonoBehaviour
                 continue; // Try another position
             }
             
-            // Check collision with other towers
+            // Check collision with other towers (larger separation for big worlds)
             bool tooClose = false;
             foreach (TowerController otherTower in ActiveTowers)
             {
                 if (otherTower != null && otherTower != this && !otherTower.IsDead)
                 {
                     float distance = Vector3.Distance(candidatePosition, otherTower.transform.localPosition);
-                    if (distance < 5f)
+                    // Minimum separation scaled for extremely large worlds (320 unit tall player)
+                    if (distance < 500f) // 500 units minimum separation
                     {
                         tooClose = true;
                         break;
                     }
+                }
+            }
+            
+            // 🎯 WALL/OBJECT AVOIDANCE FOR EXTREMELY LARGE WORLDS
+            // Use SphereCast instead of Raycast to account for tower volume
+            if (!tooClose)
+            {
+                Vector3 worldCurrentPos = transform.parent != null ? 
+                    transform.parent.TransformPoint(transform.localPosition) : transform.position;
+                
+                Vector3 direction = worldCandidatePosition - worldCurrentPos;
+                float checkDistance = direction.magnitude;
+                
+                // SphereCast to check for obstacles - accounts for tower's physical size
+                // This prevents towers from clipping through walls even in extremely large worlds
+                int layerMask = LayerMask.GetMask("Default", "Platform", "Wall");
+                
+                // Use sphere radius to detect collisions along the entire path
+                if (Physics.SphereCast(worldCurrentPos, towerCollisionRadius, direction.normalized, 
+                                      out RaycastHit hit, checkDistance, layerMask))
+                {
+                    // Obstacle detected - skip this position
+                    Debug.Log($"[TowerController] {name} SphereCast detected obstacle at {hit.distance:F1} units - rejecting position");
+                    continue;
                 }
             }
             
@@ -727,6 +769,8 @@ public class TowerController : MonoBehaviour
     
     /// <summary>
     /// Update tower dancing movement each frame
+    /// 🎯 CONTINUOUS WALL AVOIDANCE FOR EXTREMELY LARGE WORLDS
+    /// Uses SphereCast with lookahead to prevent clipping through geometry
     /// </summary>
     protected void UpdateDancingMovement()
     {
@@ -734,19 +778,65 @@ public class TowerController : MonoBehaviour
         
         // Move towards target
         Vector3 currentPos = transform.localPosition;
-        Vector3 newPos = Vector3.MoveTowards(currentPos, _dancingTargetPosition, _dancingSpeed * Time.deltaTime);
+        Vector3 desiredPos = Vector3.MoveTowards(currentPos, _dancingTargetPosition, _dancingSpeed * Time.deltaTime);
         
         // Keep Y position constant (only move on XZ plane)
-        newPos.y = _dancingOrigin.y;
+        desiredPos.y = _dancingOrigin.y;
         
-        // Debug occasionally
+        // 🎯 CONTINUOUS WALL CHECK FOR LARGE WORLDS
+        // Check EVERY frame when moving - critical for 300 units/sec speed in large worlds
+        float movementThisFrame = Vector3.Distance(currentPos, desiredPos);
+        
+        if (movementThisFrame > minMovementForWallCheck)
+        {
+            // Convert to world space for physics checks
+            Vector3 worldCurrentPos = transform.parent != null ? 
+                transform.parent.TransformPoint(currentPos) : transform.position;
+            Vector3 worldDesiredPos = transform.parent != null ? 
+                transform.parent.TransformPoint(desiredPos) : desiredPos;
+            
+            Vector3 moveDirection = worldDesiredPos - worldCurrentPos;
+            float moveDistance = moveDirection.magnitude;
+            
+            // Add lookahead distance to catch obstacles early
+            float checkDistance = moveDistance + wallDetectionLookahead;
+            
+            // LayerMask: Check Default, Platform, and Wall layers
+            int layerMask = LayerMask.GetMask("Default", "Platform", "Wall");
+            
+            // SphereCast with tower's collision radius - detects obstacles along entire path
+            if (Physics.SphereCast(worldCurrentPos, towerCollisionRadius, moveDirection.normalized, 
+                                  out RaycastHit hit, checkDistance, layerMask))
+            {
+                // Calculate how close the obstacle is
+                float obstacleDistance = hit.distance;
+                
+                // If obstacle is very close or we're about to hit it, stop and pick new target
+                if (obstacleDistance < towerCollisionRadius * 2f)
+                {
+                    Debug.LogWarning($"[TowerController] {name} WALL DETECTED at {obstacleDistance:F1} units - EMERGENCY STOP - picking new target");
+                    PickNewDancingTarget();
+                    return; // Don't move this frame
+                }
+                // If obstacle is ahead but not immediate, slow down and change direction
+                else if (obstacleDistance < wallDetectionLookahead)
+                {
+                    Debug.LogWarning($"[TowerController] {name} Obstacle ahead at {obstacleDistance:F1} units - preemptive direction change");
+                    PickNewDancingTarget();
+                    return; // Don't move this frame
+                }
+            }
+        }
+        
+        // Debug occasionally (every 2 seconds)
         if (Time.frameCount % 120 == 0)
         {
             float dist = Vector3.Distance(currentPos, _dancingTargetPosition);
-            Debug.Log($"[TowerController] {name} Dancing: Distance to target={dist:F1}");
+            Debug.Log($"[TowerController] {name} Dancing: Distance to target={dist:F1} units");
         }
         
-        transform.localPosition = newPos;
+        // Safe to move - apply position
+        transform.localPosition = desiredPos;
         
         // Check if reached target
         float distanceToTarget = Vector3.Distance(new Vector3(currentPos.x, 0, currentPos.z), 

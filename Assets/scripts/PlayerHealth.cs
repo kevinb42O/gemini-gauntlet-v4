@@ -425,6 +425,13 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         
         if (isDead || amount <= 0) return;
 
+        // DAMAGE EVENT BROADCASTING: Notify systems of damage received (before armor)
+        DamageEventBroadcaster damageEventBroadcaster = GetComponent<DamageEventBroadcaster>();
+        if (damageEventBroadcaster != null)
+        {
+            damageEventBroadcaster.BroadcastDamageReceived(amount);
+        }
+
         // ARMOR PLATE SYSTEM: Route damage through plates first
         float damageToHealth = amount;
         if (armorPlateSystem != null)
@@ -439,6 +446,12 @@ public class PlayerHealth : MonoBehaviour, IDamageable
             _currentHealth -= damageToHealth;
             _currentHealth = Mathf.Clamp(_currentHealth, 0, maxHealth);
             OnHealthChangedForHUD?.Invoke(_currentHealth, maxHealth);
+            
+            // DAMAGE EVENT BROADCASTING: Notify systems of health damage taken (after armor)
+            if (damageEventBroadcaster != null)
+            {
+                damageEventBroadcaster.BroadcastDamageTaken(damageToHealth);
+            }
             
             // Add camera trauma based on damage severity
             if (aaaCameraController != null)
@@ -534,11 +547,32 @@ public class PlayerHealth : MonoBehaviour, IDamageable
         }
         
         if (isDead || amount <= 0) return;
+
+        // DAMAGE EVENT BROADCASTING: Notify systems of bypass damage received
+        DamageEventBroadcaster damageEventBroadcaster = GetComponent<DamageEventBroadcaster>();
+        if (damageEventBroadcaster != null)
+        {
+            damageEventBroadcaster.BroadcastDamageReceived(amount);
+        }
         
         // Apply damage directly to health (bypass armor plates)
         _currentHealth -= amount;
         _currentHealth = Mathf.Clamp(_currentHealth, 0, maxHealth);
         OnHealthChangedForHUD?.Invoke(_currentHealth, maxHealth);
+        
+        // DAMAGE EVENT BROADCASTING: Notify systems of health damage taken (bypass armor)
+        if (damageEventBroadcaster != null)
+        {
+            damageEventBroadcaster.BroadcastDamageTaken(amount);
+        }
+        
+        // Add camera trauma based on damage severity (same as regular damage)
+        if (aaaCameraController != null)
+        {
+            // Scale trauma by damage (0-1 range, capped at max health)
+            float traumaAmount = Mathf.Clamp01(amount / maxHealth) * 0.5f; // Max 0.5 trauma per hit
+            aaaCameraController.AddTrauma(traumaAmount);
+        }
         
         Debug.Log($"[PlayerHealth] Direct health damage (bypass armor): {amount}, Current health: {_currentHealth}/{maxHealth}");
         

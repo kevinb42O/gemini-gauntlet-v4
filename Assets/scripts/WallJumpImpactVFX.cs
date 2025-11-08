@@ -202,7 +202,7 @@ public class WallJumpImpactVFX : MonoBehaviour
         if (enableDebug)
         {
             Debug.Log($"[WallJumpImpactVFX] Triggered effect at {effectPosition} with intensity {intensity:F2} (speed: {playerSpeed:F1})", this);
-            Debug.DrawRay(effectPosition, wallNormal * 100f, Color.cyan, 2f);
+            // Debug.DrawRay removed for performance
         }
     }
     

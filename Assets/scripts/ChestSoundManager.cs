@@ -7,21 +7,27 @@ using GeminiGauntlet.Audio;
 /// Uses centralized SpatialAudioManager for automatic distance-based cleanup
 /// NO redundant Update() checks, NO Camera.main lookups, NO fallback AudioSources
 /// Matches Tower performance: ~0.0ms per frame
+/// 
+/// FORTNITE-STYLE CHEST DETECTION:
+/// - Custom spatial profile (not GenericSFX) to avoid hardcoded min/max distance
+/// - Default range: Full volume until 300 units, fades to 3000 units
+/// - Use logarithmic rolloff for gradual distance falloff
+/// - Increase hummingVolume slider and maxHummingDistance for longer detection range
 /// </summary>
 public class ChestSoundManager : MonoBehaviour
 {
     [Header("Volume Settings")]
-    [SerializeField] [Range(0f, 1f)] private float hummingVolume = 0.6f;
+    [SerializeField] [Range(0f, 2f)] private float hummingVolume = 1.0f;
     [SerializeField] [Range(0f, 1f)] private float emergenceVolume = 0.8f;
     [SerializeField] [Range(0f, 1f)] private float openingVolume = 0.7f;
     
-    [Header("Humming Settings")]
-    [Tooltip("Distance at which chest humming becomes audible")]
-    [SerializeField] private float minHummingDistance = 50f;
-    [Tooltip("Distance at which chest humming is at full volume")]
-    [SerializeField] private float maxHummingDistance = 500f;
-    [Tooltip("Distance at which chest humming auto-stops (cleanup)")]
-    [SerializeField] private float maxAudibleDistance = 1000f;
+    [Header("Humming Settings - Fortnite-Style Chest Detection")]
+    [Tooltip("Distance where hum starts fading out (full volume up to here)")]
+    [SerializeField] private float minHummingDistance = 300f;
+    [Tooltip("Distance where hum becomes silent (fadeout ends here)")]
+    [SerializeField] private float maxHummingDistance = 3000f;
+    [Tooltip("Distance at which chest humming auto-stops (performance cleanup)")]
+    [SerializeField] private float maxAudibleDistance = 4000f;
     
     [Header("Debug")]
     [Tooltip("Enable detailed debug logging")]
@@ -122,18 +128,23 @@ public class ChestSoundManager : MonoBehaviour
             return false;
         }
 
-        // Use AAA spatial audio profile (SpatialAudioManager will handle distance tracking)
-        var profile = SpatialAudioProfiles.GenericSFX;
-        profile.profileName = "Chest Humming";
-        profile.minDistance = minHummingDistance;
-        profile.maxDistance = maxHummingDistance;
-        profile.maxAudibleDistance = maxAudibleDistance;
-        profile.rolloffMode = AudioRolloffMode.Logarithmic;
-        profile.spread = 0f;
-        profile.dopplerLevel = 0f;
-        profile.priority = SoundPriority.Low;
-        profile.distanceCheckInterval = 0.5f; // SpatialAudioManager checks every 0.5s
-        profile.distanceCullFadeOut = 0.8f;
+        // Use custom chest humming profile (like Fortnite chest detection)
+        // Key: Low minDistance for long-range audibility
+        var profile = new SpatialAudioProfile
+        {
+            profileName = "Chest Humming",
+            audioType = SpatialAudioType.Environment,
+            spatialBlend = 1f,
+            minDistance = minHummingDistance,           // Start falloff at this distance
+            maxDistance = maxHummingDistance,           // Zero volume at this distance
+            maxAudibleDistance = maxAudibleDistance,    // Auto-cleanup beyond this
+            rolloffMode = AudioRolloffMode.Logarithmic, // Gradual falloff
+            dopplerLevel = 0f,
+            spread = 0f,                                 // Directional for better localization
+            priority = SoundPriority.Low,
+            distanceCheckInterval = 0.5f,               // Check every 0.5s
+            distanceCullFadeOut = 0.8f
+        };
 
         hummingHandle = SoundSystemCore.Instance.PlaySoundAttachedWithProfile(
             hummingEvent.clip,

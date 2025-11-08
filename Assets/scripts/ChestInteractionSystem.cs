@@ -341,7 +341,7 @@ public class ChestInteractionSystem : MonoBehaviour
         
         // METHOD 1: Primary forward raycast with enhanced detection
         RaycastHit hit;
-        Debug.DrawRay(origin, forward * maxInteractionDistance, Color.blue, 0.1f);
+        // Debug.DrawRay removed for performance
         
         // Try raycast with all layers first, then filter
         if (Physics.Raycast(origin, forward, out hit, maxInteractionDistance))
@@ -385,7 +385,7 @@ public class ChestInteractionSystem : MonoBehaviour
         for (int i = 0; i < rayDirections.Length; i++)
         {
             Vector3 normalizedDir = rayDirections[i].normalized;
-            Debug.DrawRay(origin, normalizedDir * maxInteractionDistance, Color.yellow, 0.1f);
+            // Debug.DrawRay removed for performance
             
             if (Physics.Raycast(origin, normalizedDir, out hit, maxInteractionDistance))
             {
@@ -451,7 +451,7 @@ public class ChestInteractionSystem : MonoBehaviour
         RaycastHit hit;
         
         // Cast a ray from the camera/player to detect chests
-        Debug.DrawRay(raycastOrigin.position, raycastOrigin.forward * maxInteractionDistance, Color.blue, 0.1f);
+        // Debug.DrawRay removed for performance
         
         if (Physics.Raycast(raycastOrigin.position, raycastOrigin.forward, out hit, maxInteractionDistance, chestLayerMask))
         {

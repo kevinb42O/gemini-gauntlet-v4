@@ -124,7 +124,7 @@ public class ScaleOptimizer : MonoBehaviour
         if (optimizeNearPlane)
         {
             float oldNearPlane = mainCamera.nearClipPlane;
-            float newNearPlane = 0.1f * scaleMultiplier;
+            float newNearPlane = 0.025f * scaleMultiplier;
             mainCamera.nearClipPlane = newNearPlane;
             optimizationsApplied++;
             

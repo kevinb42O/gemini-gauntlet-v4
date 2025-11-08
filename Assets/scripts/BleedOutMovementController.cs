@@ -33,7 +33,6 @@ public class BleedOutMovementController : MonoBehaviour
     
     // CRITICAL: CharacterController ownership tracking
     private bool _hasCharacterControllerOwnership = false;
-    private bool _characterControllerWasEnabled = false;
     
     void Awake()
     {
@@ -167,10 +166,9 @@ public class BleedOutMovementController : MonoBehaviour
         // CRITICAL: Take exclusive ownership of CharacterController
         if (controller != null)
         {
-            _characterControllerWasEnabled = controller.enabled;
             controller.enabled = true; // Force enable for bleeding out
             _hasCharacterControllerOwnership = true;
-            Debug.Log($"[BleedOutMovement] 🔒 TOOK CharacterController ownership (was {_characterControllerWasEnabled})");
+            Debug.Log($"[BleedOutMovement] 🔒 TOOK CharacterController ownership - forcing enabled for bleed out");
         }
         else
         {
@@ -201,12 +199,14 @@ public class BleedOutMovementController : MonoBehaviour
             return;
         }
         
-        // CRITICAL: Release CharacterController ownership and restore previous state
+        // CRITICAL FIX: ALWAYS re-enable CharacterController on deactivation
+        // The revival system (RestoreMovementAfterRevive) expects it to be enabled
+        // We took ownership during bleed out, so we MUST leave it in a usable state
         if (_hasCharacterControllerOwnership && controller != null)
         {
-            controller.enabled = _characterControllerWasEnabled;
+            controller.enabled = true; // ALWAYS re-enable for revival system
             _hasCharacterControllerOwnership = false;
-            Debug.Log($"[BleedOutMovement] 🔓 RELEASED CharacterController ownership (restored to {_characterControllerWasEnabled})");
+            Debug.Log($"[BleedOutMovement] 🔓 RELEASED CharacterController ownership - RE-ENABLED for revival system");
         }
         
         isActive = false;
@@ -217,7 +217,7 @@ public class BleedOutMovementController : MonoBehaviour
         inputVelocity = Vector2.zero;
         verticalVelocity = 0f;
         
-        Debug.Log("[BleedOutMovement] ✅ DEACTIVATED - Keyboard crawl movement disabled");
+        Debug.Log("[BleedOutMovement] ✅ DEACTIVATED - CharacterController ready for movement system");
     }
     
     /// <summary>

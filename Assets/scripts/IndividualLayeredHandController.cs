@@ -46,16 +46,22 @@ public class IndividualLayeredHandController : MonoBehaviour
     private const int EMOTE_LAYER = 2;      // Emotes (OVERRIDE - disables base layer)
     private const int ABILITY_LAYER = 3;    // Abilities like armor plates (OVERRIDE - disables base layer)
     
+    // Grappling layer index - dynamically set based on animator layer count
+    // Right hand has 5 layers (Grappling = 4), Left hand has 4 layers (Grappling = 3)
+    private int GRAPPLING_LAYER = -1;  // Set in Awake() based on actual layer count
+    
     // === LAYER WEIGHTS ===
     // NOTE: Base Layer (Layer 0) weight is ALWAYS 1.0 in Unity and cannot be changed!
-    // We only track overlay layer weights (Shooting, Emote, Ability)
+    // We only track overlay layer weights (Shooting, Emote, Ability, Grappling)
     private float _targetShootingWeight = 0f;
     private float _targetEmoteWeight = 0f;
     private float _targetAbilityWeight = 0f;
+    private float _targetGrapplingWeight = 0f;
     
     private float _currentShootingWeight = 0f;
     private float _currentEmoteWeight = 0f;
     private float _currentAbilityWeight = 0f;
+    private float _currentGrapplingWeight = 0f;
     
     // === PROPERTIES ===
     public bool IsLeftHand => isLeftHand;
@@ -105,11 +111,22 @@ public class IndividualLayeredHandController : MonoBehaviour
         OpenDoor = 3
     }
     
+    public enum GrapplingState
+    {
+        None = 0,
+        Shoot = 1,
+        Hang = 2
+    }
+    
     // Current states for external queries
     public MovementState CurrentMovementState { get; private set; } = MovementState.Idle;
     public ShootingState CurrentShootingState { get; private set; } = ShootingState.None;
     public EmoteState CurrentEmoteState { get; private set; } = EmoteState.None;
     public AbilityState CurrentAbilityState { get; private set; } = AbilityState.None;
+    public GrapplingState CurrentGrapplingState { get; private set; } = GrapplingState.None;
+    
+    // Sword mode state - controls whether base layer plays normal or sword idle animations
+    public bool IsSwordModeActive { get; private set; } = false;
     
     // Reference to opposite hand (for optional sync features if needed in future)
     public IndividualLayeredHandController oppositeHand { get; set; }
@@ -128,6 +145,16 @@ public class IndividualLayeredHandController : MonoBehaviour
     {
         if (handAnimator == null)
             handAnimator = GetComponent<Animator>();
+        
+        // Determine grappling layer index based on actual animator layer count
+        if (handAnimator != null)
+        {
+            // Grappling is always the LAST layer (highest index)
+            GRAPPLING_LAYER = handAnimator.layerCount - 1;
+            
+            if (enableDebugLogs)
+                Debug.Log($"[{name}] Grappling layer auto-detected: Layer {GRAPPLING_LAYER} (Total layers: {handAnimator.layerCount})");
+        }
         
         // Find state manager
         _stateManager = GetComponentInParent<PlayerAnimationStateManager>();
@@ -180,22 +207,31 @@ public class IndividualLayeredHandController : MonoBehaviour
         _currentShootingWeight = 0f;
         _currentEmoteWeight = 0f;
         _currentAbilityWeight = 0f;
+        _currentGrapplingWeight = 0f;
         
         _targetShootingWeight = 0f;
         _targetEmoteWeight = 0f;
         _targetAbilityWeight = 0f;
+        _targetGrapplingWeight = 0f;
         
         // Apply to animator immediately
         ApplyLayerWeightsToAnimator();
         
         if (enableDebugLogs)
         {
-            Debug.Log($"[{name}] Layer weights initialized - Shooting: {_currentShootingWeight}, Emote: {_currentEmoteWeight}, Ability: {_currentAbilityWeight} (Base layer always 1.0)");
+            Debug.Log($"[{name}] Layer weights initialized - Shooting: {_currentShootingWeight}, Emote: {_currentEmoteWeight}, Ability: {_currentAbilityWeight}, Grappling: {_currentGrapplingWeight} (Base layer always 1.0)");
         }
     }
     
     void Update()
     {
+        // 🪝 ROPE ANIMATION OVERRIDE: Prevent falling animation when any rope is active
+        if (IsAnyRopeActive() && CurrentMovementState == MovementState.Falling)
+        {
+            // Force idle instead of falling when rope is active
+            SetMovementState(MovementState.Idle);
+        }
+        
         // PERFORMANCE OPTIMIZED: Only update if blending is enabled
         // When blending is disabled, weights are applied immediately in SetTargetWeight()
         if (enableLayerBlending)
@@ -264,7 +300,8 @@ public class IndividualLayeredHandController : MonoBehaviour
         
         return Mathf.Abs(_currentShootingWeight - _targetShootingWeight) > EPSILON ||
                Mathf.Abs(_currentEmoteWeight - _targetEmoteWeight) > EPSILON ||
-               Mathf.Abs(_currentAbilityWeight - _targetAbilityWeight) > EPSILON;
+               Mathf.Abs(_currentAbilityWeight - _targetAbilityWeight) > EPSILON ||
+               Mathf.Abs(_currentGrapplingWeight - _targetGrapplingWeight) > EPSILON;
     }
     
     /// <summary>
@@ -286,6 +323,7 @@ public class IndividualLayeredHandController : MonoBehaviour
             _currentShootingWeight = Mathf.Lerp(_currentShootingWeight, _targetShootingWeight, layerBlendSpeed * Time.deltaTime);
             _currentEmoteWeight = Mathf.Lerp(_currentEmoteWeight, _targetEmoteWeight, layerBlendSpeed * Time.deltaTime);
             _currentAbilityWeight = Mathf.Lerp(_currentAbilityWeight, _targetAbilityWeight, layerBlendSpeed * Time.deltaTime);
+            _currentGrapplingWeight = Mathf.Lerp(_currentGrapplingWeight, _targetGrapplingWeight, layerBlendSpeed * Time.deltaTime);
         }
         else
         {
@@ -293,6 +331,7 @@ public class IndividualLayeredHandController : MonoBehaviour
             _currentShootingWeight = _targetShootingWeight;
             _currentEmoteWeight = _targetEmoteWeight;
             _currentAbilityWeight = _targetAbilityWeight;
+            _currentGrapplingWeight = _targetGrapplingWeight;
         }
         
         ApplyLayerWeightsToAnimator();
@@ -347,6 +386,18 @@ public class IndividualLayeredHandController : MonoBehaviour
                 _targetAbilityWeight = 0;
                 CurrentAbilityState = AbilityState.None;
             }
+            
+            // GRAPPLING LAYER - Optional (both hands support rope animations)
+            if (handAnimator.layerCount > GRAPPLING_LAYER)
+            {
+                handAnimator.SetLayerWeight(GRAPPLING_LAYER, _currentGrapplingWeight);
+            }
+            else if (_targetGrapplingWeight > 0)
+            {
+                // Grappling layer missing - silently reset
+                _targetGrapplingWeight = 0;
+                CurrentGrapplingState = GrapplingState.None;
+            }
         }
         catch (System.Exception)
         {
@@ -376,6 +427,65 @@ public class IndividualLayeredHandController : MonoBehaviour
     /// </summary>
     public void SetMovementState(MovementState newState)
     {
+        // 🎯 CRITICAL FIX: When entering slide animation, FORCE ALL OVERRIDE LAYERS to 0!
+        // Override layers block base layer (slide) from showing
+        // This was causing right hand to show idle instead of slide
+        if (newState == MovementState.Slide)
+        {
+            // Log BEFORE state to diagnose issue
+            if (enableDebugLogs)
+            {
+                Debug.Log($"[{name}] 🛷 SLIDE ENTRY - Current layer weights: " +
+                         $"Shooting={_currentShootingWeight:F2}, " +
+                         $"Emote={_currentEmoteWeight:F2}, " +
+                         $"Ability={_currentAbilityWeight:F2}, " +
+                         $"Grappling={_currentGrapplingWeight:F2}");
+            }
+            
+            // INSTANT reset ALL override layers - no blending, no delay
+            _targetShootingWeight = 0f;
+            _currentShootingWeight = 0f;
+            _targetEmoteWeight = 0f;
+            _currentEmoteWeight = 0f;
+            _targetAbilityWeight = 0f;
+            _currentAbilityWeight = 0f;
+            _targetGrapplingWeight = 0f;
+            _currentGrapplingWeight = 0f;
+            
+            CurrentShootingState = ShootingState.None;
+            CurrentEmoteState = EmoteState.None;
+            CurrentAbilityState = AbilityState.None;
+            CurrentGrapplingState = GrapplingState.None;
+            
+            // Cancel any active coroutines
+            if (_resetShootingCoroutine != null)
+            {
+                StopCoroutine(_resetShootingCoroutine);
+                _resetShootingCoroutine = null;
+            }
+            if (_emoteMonitorCoroutine != null)
+            {
+                StopCoroutine(_emoteMonitorCoroutine);
+                _emoteMonitorCoroutine = null;
+            }
+            
+            // Apply immediately to animator - ALL layers
+            if (handAnimator != null)
+            {
+                if (handAnimator.layerCount > SHOOTING_LAYER)
+                    handAnimator.SetLayerWeight(SHOOTING_LAYER, 0f);
+                if (handAnimator.layerCount > EMOTE_LAYER)
+                    handAnimator.SetLayerWeight(EMOTE_LAYER, 0f);
+                if (handAnimator.layerCount > ABILITY_LAYER)
+                    handAnimator.SetLayerWeight(ABILITY_LAYER, 0f);
+                if (handAnimator.layerCount > GRAPPLING_LAYER)
+                    handAnimator.SetLayerWeight(GRAPPLING_LAYER, 0f);
+            }
+            
+            if (enableDebugLogs)
+                Debug.Log($"[{name}] 🛷 SLIDE: Forced ALL override layers to 0!");
+        }
+        
         // 🎯 JUMP ALTERNATION: Handle BEFORE early return check!
         // Jump needs to toggle even if we're "already" in jump state
         if (newState == MovementState.Jump)
@@ -412,6 +522,8 @@ public class IndividualLayeredHandController : MonoBehaviour
         // BUT we already handled jump toggle above!
         if (CurrentMovementState == newState)
         {
+            if (enableDebugLogs && newState == MovementState.Slide)
+                Debug.Log($"[{name}] Already in Slide state, skipping");
             return; // CRITICAL: Already in this state, skip
         }
         
@@ -421,6 +533,52 @@ public class IndividualLayeredHandController : MonoBehaviour
         {
             // Simple and clean - let Unity's Animator state machine handle all transitions
             handAnimator.SetInteger("movementState", (int)newState);
+            
+            if (enableDebugLogs && newState == MovementState.Slide)
+            {
+                Debug.Log($"[{name}] 🎬 ANIMATOR UPDATED: movementState = 6 (Slide)");
+            }
+        }
+    }
+    
+    // === SWORD MODE SYSTEM ===
+    
+    /// <summary>
+    /// Enable sword mode - switches base layer to sword idle animations.
+    /// When sword mode is active, ONLY sword animations play (no normal movement anims).
+    /// </summary>
+    public void EnableSwordMode()
+    {
+        if (IsSwordModeActive) return; // Already in sword mode
+        
+        IsSwordModeActive = true;
+        
+        if (handAnimator != null)
+        {
+            // Set the animator boolean to enable sword idle animations on base layer
+            handAnimator.SetBool("isSwordMode", true);
+            
+            if (enableDebugLogs)
+                Debug.Log($"[{name}] ⚔️ SWORD MODE ENABLED - Base layer now plays sword idle animations");
+        }
+    }
+    
+    /// <summary>
+    /// Disable sword mode - returns base layer to normal movement animations.
+    /// </summary>
+    public void DisableSwordMode()
+    {
+        if (!IsSwordModeActive) return; // Already disabled
+        
+        IsSwordModeActive = false;
+        
+        if (handAnimator != null)
+        {
+            // Set the animator boolean to disable sword idle animations on base layer
+            handAnimator.SetBool("isSwordMode", false);
+            
+            if (enableDebugLogs)
+                Debug.Log($"[{name}] ⚔️ SWORD MODE DISABLED - Base layer back to normal movement animations");
         }
     }
     
@@ -475,8 +633,15 @@ public class IndividualLayeredHandController : MonoBehaviour
         {
             handAnimator.SetLayerWeight(SHOOTING_LAYER, 1f);
             
+            // 🔧 CRITICAL FIX: Ensure beam parameter is EXPLICITLY false before shotgun
+            // This guarantees clean separation between beam and shotgun animations
+            handAnimator.SetBool("IsBeamAc", false);
+            
             // SetTrigger ALWAYS fires even if already in shotgun state (if animator allows it)
             handAnimator.SetTrigger("ShotgunT");
+            
+            if (enableDebugLogs)
+                Debug.Log($"[{name}] ✅ SHOTGUN FIRED - ShotgunT triggered, IsBeamAc=false");
         }
         else if (enableDebugLogs)
         {
@@ -527,7 +692,20 @@ public class IndividualLayeredHandController : MonoBehaviour
         // Validate animator and parameter exist before setting
         if (handAnimator != null && handAnimator.layerCount > SHOOTING_LAYER)
         {
+            // 🔧 CRITICAL FIX: Clear ALL shotgun-related triggers/parameters BEFORE starting beam
+            // This ensures clean transition with no shotgun animation bleeding through
+            handAnimator.ResetTrigger("ShotgunT");
+            handAnimator.ResetTrigger("SwordAttack1T");
+            handAnimator.ResetTrigger("SwordAttack2T");
+            handAnimator.ResetTrigger("SwordRevealT");
+            handAnimator.ResetTrigger("SwordChargeT");
+            handAnimator.ResetTrigger("SwordPowerAttackT");
+            
+            // NOW set beam parameter - animator is in clean state
             handAnimator.SetBool("IsBeamAc", true);
+            
+            if (enableDebugLogs)
+                Debug.Log($"[{name}] ✅ BEAM START - IsBeamAc=true, all shotgun triggers cleared");
         }
         else if (enableDebugLogs)
         {
@@ -545,7 +723,11 @@ public class IndividualLayeredHandController : MonoBehaviour
         // Validate animator before setting parameter
         if (handAnimator != null && handAnimator.layerCount > SHOOTING_LAYER)
         {
+            // 🔧 CRITICAL FIX: Explicitly set beam parameter to false
             handAnimator.SetBool("IsBeamAc", false);
+            
+            if (enableDebugLogs)
+                Debug.Log($"[{name}] ✅ BEAM STOPPED - IsBeamAc=false, layer weight dropping to 0");
         }
         
         // 🔧 CRITICAL FIX: Reset base layer idle animation to start from beginning
@@ -612,13 +794,15 @@ public class IndividualLayeredHandController : MonoBehaviour
         {
             handAnimator.SetLayerWeight(SHOOTING_LAYER, 1f);
             
-            // Trigger the appropriate sword attack animation based on index
+            // 🔧 CRITICAL FIX: Ensure beam parameter is EXPLICITLY false before sword attack
+            handAnimator.SetBool("IsBeamAc", false);
+            
             // Trigger the appropriate sword attack animation based on index
             string triggerName = (attackIndex == 2) ? "SwordAttack2T" : "SwordAttack1T";
             handAnimator.SetTrigger(triggerName);
             
             if (enableDebugLogs)
-                Debug.Log($"[{name}] SWORD ATTACK {attackIndex} ANIMATION TRIGGERED! (Trigger: {triggerName})");
+                Debug.Log($"[{name}] ✅ SWORD ATTACK {attackIndex} - {triggerName} triggered, IsBeamAc=false");
         }
         else if (enableDebugLogs)
         {
@@ -677,11 +861,14 @@ public class IndividualLayeredHandController : MonoBehaviour
         {
             handAnimator.SetLayerWeight(SHOOTING_LAYER, 1f);
             
+            // 🔧 CRITICAL FIX: Ensure beam parameter is EXPLICITLY false before sword reveal
+            handAnimator.SetBool("IsBeamAc", false);
+            
             // Trigger sword reveal animation
             handAnimator.SetTrigger("SwordRevealT");
             
             if (enableDebugLogs)
-                Debug.Log($"[{name}] 🗡️ SWORD REVEAL ANIMATION TRIGGERED! (Shooting layer weight: 1.0, Override active)");
+                Debug.Log($"[{name}] 🗡️ SWORD REVEAL - SwordRevealT triggered, IsBeamAc=false");
         }
         else if (enableDebugLogs)
         {
@@ -745,11 +932,14 @@ public class IndividualLayeredHandController : MonoBehaviour
         {
             handAnimator.SetLayerWeight(SHOOTING_LAYER, 1f);
             
+            // 🔧 CRITICAL FIX: Ensure beam parameter is EXPLICITLY false before sword charge
+            handAnimator.SetBool("IsBeamAc", false);
+            
             // Trigger sword charge animation
             handAnimator.SetTrigger("SwordChargeT");
             
             if (enableDebugLogs)
-                Debug.Log($"[{name}] ⚡ SWORD CHARGE ANIMATION TRIGGERED!");
+                Debug.Log($"[{name}] ⚡ SWORD CHARGE - SwordChargeT triggered, IsBeamAc=false");
         }
         else if (enableDebugLogs)
         {
@@ -769,11 +959,14 @@ public class IndividualLayeredHandController : MonoBehaviour
         {
             handAnimator.SetLayerWeight(SHOOTING_LAYER, 1f);
             
+            // 🔧 CRITICAL FIX: Ensure beam parameter is EXPLICITLY false before power attack
+            handAnimator.SetBool("IsBeamAc", false);
+            
             // Trigger power attack animation
             handAnimator.SetTrigger("SwordPowerAttackT");
             
             if (enableDebugLogs)
-                Debug.Log($"[{name}] 💥 SWORD POWER ATTACK ANIMATION TRIGGERED!");
+                Debug.Log($"[{name}] 💥 SWORD POWER ATTACK - SwordPowerAttackT triggered, IsBeamAc=false");
         }
         else if (enableDebugLogs)
         {
@@ -782,6 +975,122 @@ public class IndividualLayeredHandController : MonoBehaviour
         
         // Reset shooting state after power attack animation (longer than normal attack)
         _resetShootingCoroutine = StartCoroutine(ResetShootingState(1.0f));
+    }
+    
+    // === GRAPPLING ANIMATIONS ===
+    
+    /// <summary>
+    /// Play rope shoot animation (one-shot)
+    /// </summary>
+    public void PlayRopeShoot()
+    {
+        if (handAnimator == null)
+        {
+            Debug.LogError($"[{name}] ❌ Cannot play rope shoot - handAnimator is NULL!");
+            return;
+        }
+        
+        if (handAnimator.layerCount <= GRAPPLING_LAYER)
+        {
+            Debug.LogError($"[{name}] ❌ Cannot play rope shoot - animator only has {handAnimator.layerCount} layers, needs at least {GRAPPLING_LAYER + 1}! Add Grappling Layer (4) to animator!");
+            return;
+        }
+        
+        // Check if parameters exist
+        bool hasIsRopeActive = false;
+        bool hasRopeShootT = false;
+        bool hasRopeHangT = false;
+        
+        foreach (AnimatorControllerParameter param in handAnimator.parameters)
+        {
+            if (param.name == "IsRopeActive") hasIsRopeActive = true;
+            if (param.name == "RopeShootT") hasRopeShootT = true;
+            if (param.name == "RopeHangT") hasRopeHangT = true;
+        }
+        
+        if (!hasIsRopeActive)
+            Debug.LogError($"[{name}] ❌ Animator missing parameter: IsRopeActive (Bool)");
+        if (!hasRopeShootT)
+            Debug.LogError($"[{name}] ❌ Animator missing parameter: RopeShootT (Trigger)");
+        if (!hasRopeHangT)
+            Debug.LogError($"[{name}] ❌ Animator missing parameter: RopeHangT (Trigger)");
+        
+        if (!hasIsRopeActive || !hasRopeShootT || !hasRopeHangT)
+        {
+            Debug.LogError($"[{name}] ❌ Cannot play rope animation - missing required animator parameters!");
+            return;
+        }
+        
+        CurrentGrapplingState = GrapplingState.Shoot;
+        
+        // Set grappling layer to full weight
+        SetTargetWeight(ref _targetGrapplingWeight, 1f);
+        _currentGrapplingWeight = 1f;
+        handAnimator.SetLayerWeight(GRAPPLING_LAYER, 1f);
+        
+        // Set rope active parameter for clean state machine transitions
+        handAnimator.SetBool("IsRopeActive", true);
+        
+        // Trigger shoot animation
+        handAnimator.SetTrigger("RopeShootT");
+        
+        if (enableDebugLogs)
+            Debug.Log($"[{name}] 🎯 Rope shoot animation triggered - Layer {GRAPPLING_LAYER} weight = 1.0");
+        
+        // Transition to hang after shoot animation completes (0.3s)
+        StartCoroutine(TransitionToRopeHang(0.3f));
+    }
+    
+    /// <summary>
+    /// Transition from shoot to hang animation
+    /// </summary>
+    private IEnumerator TransitionToRopeHang(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        PlayRopeHang();
+    }
+    
+    /// <summary>
+    /// Play rope hang animation (looping hold)
+    /// </summary>
+    private void PlayRopeHang()
+    {
+        if (handAnimator == null || handAnimator.layerCount <= GRAPPLING_LAYER)
+            return;
+        
+        CurrentGrapplingState = GrapplingState.Hang;
+        
+        // Ensure grappling layer stays at full weight
+        SetTargetWeight(ref _targetGrapplingWeight, 1f);
+        handAnimator.SetLayerWeight(GRAPPLING_LAYER, 1f);
+        
+        // Trigger hang animation (loops)
+        handAnimator.SetTrigger("RopeHangT");
+        
+        if (enableDebugLogs)
+            Debug.Log($"[{name}] 🪝 Rope hang animation playing (loop)");
+    }
+    
+    /// <summary>
+    /// Stop rope animation and return to idle
+    /// </summary>
+    public void StopRopeAnimation()
+    {
+        if (handAnimator == null || handAnimator.layerCount <= GRAPPLING_LAYER)
+            return;
+        
+        CurrentGrapplingState = GrapplingState.None;
+        
+        // Clear rope active parameter for clean exit to base layer
+        handAnimator.SetBool("IsRopeActive", false);
+        
+        // Drop grappling layer weight to 0
+        SetTargetWeight(ref _targetGrapplingWeight, 0f);
+        _currentGrapplingWeight = 0f;
+        handAnimator.SetLayerWeight(GRAPPLING_LAYER, 0f);
+        
+        if (enableDebugLogs)
+            Debug.Log($"[{name}] 🔓 Rope released - returning to base layer");
     }
     
     
@@ -798,6 +1107,13 @@ public class IndividualLayeredHandController : MonoBehaviour
         if (handAnimator != null && handAnimator.layerCount > SHOOTING_LAYER)
         {
             handAnimator.SetLayerWeight(SHOOTING_LAYER, 0f);
+            
+            // 🔧 CRITICAL FIX: Ensure beam parameter is NEVER left on after shotgun resets
+            // Safety mechanism - if shotgun finished but beam param is somehow still true, clear it
+            handAnimator.SetBool("IsBeamAc", false);
+            
+            if (enableDebugLogs)
+                Debug.Log($"[{name}] ✅ Shooting reset complete - layer weight=0, IsBeamAc=false");
         }
         
         // 🔧 CRITICAL FIX: Reset base layer idle animation to start from beginning
@@ -1306,5 +1622,17 @@ public class IndividualLayeredHandController : MonoBehaviour
     public void DEBUG_LogCurrentState()
     {
         Debug.Log($"[IndividualLayeredHandController] {name} - Movement: {CurrentMovementState}, Shooting: {CurrentShootingState}, Emote: {CurrentEmoteState}, Ability: {CurrentAbilityState}");
+    }
+    
+    /// <summary>
+    /// Check if any rope is currently active (left or right hand)
+    /// </summary>
+    private bool IsAnyRopeActive()
+    {
+        var grapplingSystem = GetComponentInParent<AdvancedGrapplingSystem>();
+        if (grapplingSystem == null)
+            return false;
+        
+        return grapplingSystem.IsLeftRopeActive || grapplingSystem.IsRightRopeActive;
     }
 }

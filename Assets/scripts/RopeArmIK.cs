@@ -96,7 +96,8 @@ public class RopeArmIK : MonoBehaviour
         // Only override when actively roping
         if (!anyRopeActive) return;
         
-        // HARD OVERRIDE - no blending, just set rotation directly!
+        // 🔥 HARD OVERRIDE EVERY FRAME - constantly track the anchor position!
+        // No state checks, no blending - just pure real-time tracking
         if (grapplingSystem.IsLeftRopeActive && leftArmBone != null)
         {
             Vector3 leftAnchor = grapplingSystem.LeftRopeAnchor;
@@ -112,43 +113,42 @@ public class RopeArmIK : MonoBehaviour
     
     /// <summary>
     /// HARD OVERRIDE - Point arm directly at target (no blending with animator)
+    /// Simplified for perfect tracking - just rotate the shoulder toward anchor
     /// </summary>
     private void PointArmAtTarget(Transform armBone, Vector3 targetWorldPos, bool isLeftArm)
     {
-        // Calculate direction from shoulder to rope anchor
+        // 🔥 Calculate direction from shoulder to anchor
         Vector3 shoulderPos = armBone.position;
         Vector3 toAnchor = (targetWorldPos - shoulderPos).normalized;
         
-        // Create rotation pointing toward anchor
-        Vector3 upVector = armBone.parent.up; // Camera independent!
-        Quaternion targetWorldRotation = Quaternion.LookRotation(toAnchor, upVector);
+        // 🔥 Create world-space rotation pointing at anchor
+        // Use world up for stability (not parent.up which can be rotated)
+        Quaternion worldRotation = Quaternion.LookRotation(toAnchor, Vector3.up);
         
-        // Apply offset for natural arm pointing
-        targetWorldRotation *= Quaternion.Euler(pitchOffset, yawOffset, 0);
+        // 🔥 Apply natural arm pointing offset (slight pitch down)
+        worldRotation *= Quaternion.Euler(pitchOffset, yawOffset, 0);
         
-        // Convert to local space
-        Quaternion targetLocalRotation = Quaternion.Inverse(armBone.parent.rotation) * targetWorldRotation;
+        // 🔥 Convert to local space (relative to parent bone)
+        Quaternion localRotation = Quaternion.Inverse(armBone.parent.rotation) * worldRotation;
         
-        // LEFT ARM: Mirror the rotation
+        // 🔥 LEFT ARM: Mirror the rotation for proper left-hand pointing
         if (isLeftArm)
         {
-            targetLocalRotation = new Quaternion(
-                -targetLocalRotation.x,
-                targetLocalRotation.y,
-                targetLocalRotation.z,
-                targetLocalRotation.w
-            );
+            // Mirror by flipping the Y rotation (horizontal axis)
+            Vector3 euler = localRotation.eulerAngles;
+            euler.y = -euler.y; // Flip horizontal rotation
+            localRotation = Quaternion.Euler(euler);
         }
         
-        // HARD SET - no blending, full override!
-        armBone.localRotation = targetLocalRotation;
+        // 🔥 HARD SET - Override animator completely!
+        armBone.localRotation = localRotation;
         
         // Debug visualization
         if (showDebugLines)
         {
             Color debugColor = isLeftArm ? Color.cyan : Color.magenta;
             Debug.DrawLine(shoulderPos, targetWorldPos, debugColor);
-            Debug.DrawRay(shoulderPos, armBone.forward * 300f, debugColor * 0.5f);
+            // Debug.DrawRay removed for performance
         }
     }
     

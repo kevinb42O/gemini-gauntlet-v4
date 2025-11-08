@@ -31,11 +31,11 @@ public class CrouchConfig : ScriptableObject
     [Tooltip("Downhill gravity acceleration (natural = 980)")]
     public float slideGravityAccel = 3240f; // SCALED 3x for 320-unit character (was 1080)
     
-    [Tooltip("Friction on flat ground (higher = faster deceleration)")]
-    public float slideFrictionFlat = 6f; // NEXT-LEVEL: Speed-proportional physics (was 18f)
+    [Tooltip("Friction on flat ground - SPEED-PROPORTIONAL! (0.5-2.0 = low friction, 6+ = instant stop)")]
+    public float slideFrictionFlat = 1.5f; // REBALANCED: Was 6f (too harsh!), now 1.5f for smooth flow
     
-    [Tooltip("Friction on slopes (higher = more control)")]
-    public float slideFrictionSlope = 8f; // NEXT-LEVEL: Balanced for flow state (was 6f)
+    [Tooltip("Friction on slopes - SPEED-PROPORTIONAL! (0.5-2.0 = surfing, 6+ = instant stop)")]
+    public float slideFrictionSlope = 1.0f; // REBALANCED: Was 8f (KILLER!), now 1.0f for downhill flow
     
     [Tooltip("Steering responsiveness while sliding")]
     public float slideSteerAcceleration = 1200f; // SCALED 3x for 320-unit character (was 400)
@@ -50,8 +50,12 @@ public class CrouchConfig : ScriptableObject
     [Tooltip("Ground adhesion force (prevents bouncing)")]
     public float stickToGroundVelocity = 66f; // SCALED 3x for 320-unit character (was 22)
     
-    [Tooltip("Uphill resistance multiplier")]
-    public float uphillFrictionMultiplier = 4f;
+    [Tooltip("Uphill resistance multiplier (2.0 = smooth deceleration, 4.0+ = brick wall)")]
+    public float uphillFrictionMultiplier = 2.0f; // REBALANCED: Was 4f (instant stop!), now 2f for gradual slowdown
+    
+    [Tooltip("Uphill friction ramp-up time (0.5s = smooth transition, 0.0s = instant brick wall)")]
+    [Range(0f, 1f)]
+    public float uphillRampUpDuration = 0.5f; // Time to reach full uphill friction (prevents brick wall effect)
     
     [Header("=== 🎯 TACTICAL DIVE ===")]
     [Tooltip("Forward launch force")]

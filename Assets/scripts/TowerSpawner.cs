@@ -32,6 +32,37 @@ public class TowerSpawner : MonoBehaviour
     [Tooltip("Maximum number of towers that can exist simultaneously on this platform")]
     [SerializeField] private int maxSimultaneousTowers = 15;
     
+    [Header("🎯 PRIORITY 2: Spawn Point Cooldowns")]
+    [Tooltip("Time (seconds) a spawn point must wait before being reused after a tower death")]
+    [Range(10f, 120f)]
+    [SerializeField] private float spawnPointCooldownDuration = 45f;
+    
+    [Tooltip("Show debug logs for spawn point cooldown system")]
+    [SerializeField] private bool logSpawnPointCooldowns = true;
+    
+    [Header("🎯 SMART SPAWN ROTATION")]
+    [Tooltip("If enabled, uses spawn points in rotation (saves one for respawning) instead of random selection")]
+    [SerializeField] private bool useSmartSpawnRotation = true;
+    
+    [Tooltip("Minimum distance between towers to prevent spawning too close (in Unity units)")]
+    [Range(500f, 5000f)]
+    [SerializeField] private float minTowerSeparationDistance = 2000f;
+    
+    [Tooltip("Show debug logs for smart spawn rotation")]
+    [SerializeField] private bool logSmartSpawning = true;
+    
+    [Header("🎯 PRIORITY 4: Respawn Delay Randomization")]
+    [Tooltip("Minimum delay (seconds) before respawning a tower after death")]
+    [Range(2f, 15f)]
+    [SerializeField] private float minRespawnDelay = 5f;
+    
+    [Tooltip("Maximum delay (seconds) before respawning a tower after death")]
+    [Range(2f, 20f)]
+    [SerializeField] private float maxRespawnDelay = 10f;
+    
+    [Tooltip("Show debug logs for respawn delay randomization")]
+    [SerializeField] private bool logRespawnDelays = true;
+    
     // Hardcoded emergence settings - no inspector bullshit
     private const float EMERGENCE_DURATION = 1.5f;
     private const float STAGGER_DELAY = 0.5f;
@@ -41,6 +72,14 @@ public class TowerSpawner : MonoBehaviour
     private List<TowerController> _activeTowers = new List<TowerController>();
     private HashSet<Transform> _usedSpawnPoints = new HashSet<Transform>();
     private Dictionary<TowerController, Transform> _towerToSpawnPoint = new Dictionary<TowerController, Transform>();
+    
+    // 🎯 PRIORITY 2: Spawn point cooldown tracking
+    private Dictionary<Transform, float> _spawnPointCooldowns = new Dictionary<Transform, float>();
+    
+    // 🎯 SMART SPAWN ROTATION: Track last used spawn point index for sequential spawning
+    private int _lastUsedSpawnPointIndex = -1;
+    private List<Transform> _reservedRespawnPoints = new List<Transform>(); // Points reserved for respawning
+    
     private bool _hasSpawnedTowers = false;
     private bool _chestHasEmerged = false;
     private bool _playerIsOnPlatform = false;
@@ -72,6 +111,41 @@ public class TowerSpawner : MonoBehaviour
     {
         // Clean up dead towers from tracking list
         _activeTowers.RemoveAll(tower => tower == null || tower.IsDead);
+        
+        // 🎯 PRIORITY 2: Tick down spawn point cooldowns
+        if (_spawnPointCooldowns.Count > 0)
+        {
+            // Create list of cooldowns that expired this frame
+            List<Transform> expiredCooldowns = new List<Transform>();
+            
+            // Update all cooldowns
+            List<Transform> pointsToUpdate = new List<Transform>(_spawnPointCooldowns.Keys);
+            foreach (Transform spawnPoint in pointsToUpdate)
+            {
+                if (spawnPoint == null)
+                {
+                    expiredCooldowns.Add(spawnPoint);
+                    continue;
+                }
+                
+                _spawnPointCooldowns[spawnPoint] -= Time.deltaTime;
+                
+                if (_spawnPointCooldowns[spawnPoint] <= 0f)
+                {
+                    expiredCooldowns.Add(spawnPoint);
+                    if (logSpawnPointCooldowns)
+                    {
+                        Debug.Log($"[TowerSpawner] ✅ Spawn point '{spawnPoint.name}' cooldown expired - available for respawn");
+                    }
+                }
+            }
+            
+            // Remove expired cooldowns
+            foreach (Transform expiredPoint in expiredCooldowns)
+            {
+                _spawnPointCooldowns.Remove(expiredPoint);
+            }
+        }
     }
 
     /// <summary>
@@ -98,6 +172,7 @@ public class TowerSpawner : MonoBehaviour
 
     /// <summary>
     /// Staggered tower spawning for smooth, cinematic feel
+    /// 🎯 SMART SPAWNING: Uses sequential spawn points, reserves last one(s) for respawning
     /// </summary>
     private System.Collections.IEnumerator SpawnTowersStaggered()
     {
@@ -109,23 +184,85 @@ public class TowerSpawner : MonoBehaviour
         
         Transform parent = platformParent != null ? platformParent : transform;
         int towerCount = Random.Range(minTowersToSpawn, maxTowersToSpawn + 1);
-        towerCount = Mathf.Min(towerCount, towerSpawnPoints.Length);
         
+        // 🎯 SMART SPAWNING: If we have more spawn points than towers, reserve some for respawning
         List<Transform> availablePoints = towerSpawnPoints.Where(p => p != null).ToList();
+        int totalSpawnPoints = availablePoints.Count;
+        
+        if (useSmartSpawnRotation && totalSpawnPoints > towerCount)
+        {
+            // Reserve 1 spawn point for respawning (or 2 if we have 6+ points)
+            int pointsToReserve = totalSpawnPoints >= 6 ? 2 : 1;
+            towerCount = Mathf.Min(towerCount, totalSpawnPoints - pointsToReserve);
+            
+            if (logSmartSpawning)
+            {
+                Debug.Log($"[TowerSpawner] 🎯 SMART SPAWN: {towerCount} initial towers, reserving {pointsToReserve} spawn points for respawning (Total points: {totalSpawnPoints})");
+            }
+        }
+        else
+        {
+            towerCount = Mathf.Min(towerCount, totalSpawnPoints);
+        }
         
         yield return new WaitForSeconds(INITIAL_DELAY);
         
+        // 🎯 SMART SPAWNING: Use sequential rotation instead of random
         for (int i = 0; i < towerCount && availablePoints.Count > 0; i++)
         {
-            int randomIndex = Random.Range(0, availablePoints.Count);
-            Transform spawnPoint = availablePoints[randomIndex];
-            availablePoints.RemoveAt(randomIndex);
+            Transform spawnPoint;
+            
+            if (useSmartSpawnRotation)
+            {
+                // Sequential spawning - use next spawn point in order
+                _lastUsedSpawnPointIndex = (_lastUsedSpawnPointIndex + 1) % availablePoints.Count;
+                spawnPoint = availablePoints[_lastUsedSpawnPointIndex];
+                availablePoints.RemoveAt(_lastUsedSpawnPointIndex);
+                
+                // Adjust index after removal
+                if (_lastUsedSpawnPointIndex >= availablePoints.Count && availablePoints.Count > 0)
+                {
+                    _lastUsedSpawnPointIndex = 0;
+                }
+                
+                if (logSmartSpawning)
+                {
+                    Debug.Log($"[TowerSpawner] 🎯 Tower {i + 1}/{towerCount} spawning at sequential point: '{spawnPoint.name}'");
+                }
+            }
+            else
+            {
+                // Random spawning (old behavior)
+                int randomIndex = Random.Range(0, availablePoints.Count);
+                spawnPoint = availablePoints[randomIndex];
+                availablePoints.RemoveAt(randomIndex);
+            }
+            
+            // Check if this spawn point is too close to existing towers
+            if (!IsSpawnPointSafe(spawnPoint))
+            {
+                if (logSmartSpawning)
+                {
+                    Debug.LogWarning($"[TowerSpawner] ⚠️ Spawn point '{spawnPoint.name}' too close to existing towers - skipping");
+                }
+                continue; // Skip this spawn point
+            }
             
             SpawnSingleTower(spawnPoint, parent);
             
             if (i < towerCount - 1)
             {
                 yield return new WaitForSeconds(STAGGER_DELAY);
+            }
+        }
+        
+        // Mark remaining points as reserved for respawning
+        if (useSmartSpawnRotation)
+        {
+            _reservedRespawnPoints = availablePoints;
+            if (logSmartSpawning && _reservedRespawnPoints.Count > 0)
+            {
+                Debug.Log($"[TowerSpawner] 🎯 Reserved {_reservedRespawnPoints.Count} spawn points for respawning: {string.Join(", ", _reservedRespawnPoints.Select(p => p.name))}");
             }
         }
     }
@@ -238,6 +375,16 @@ public class TowerSpawner : MonoBehaviour
         {
             _towerToSpawnPoint.Remove(tower);
             _usedSpawnPoints.Remove(spawnPoint);
+            
+            // 🎯 PRIORITY 2: Add cooldown to this spawn point
+            if (spawnPoint != null)
+            {
+                _spawnPointCooldowns[spawnPoint] = spawnPointCooldownDuration;
+                if (logSpawnPointCooldowns)
+                {
+                    Debug.Log($"[TowerSpawner] ⏱️ Spawn point '{spawnPoint.name}' on cooldown for {spawnPointCooldownDuration}s after tower death");
+                }
+            }
         }
         
         // If continuous spawning is enabled and chest hasn't emerged, respawn a new tower
@@ -246,39 +393,143 @@ public class TowerSpawner : MonoBehaviour
             // Check if we're below the max tower cap
             if (_activeTowers.Count < maxSimultaneousTowers)
             {
-                // Find a free spawn point to use
+                // Find a free spawn point to use (respects cooldowns)
                 Transform freeSpawnPoint = GetFreeSpawnPoint();
                 if (freeSpawnPoint != null)
                 {
-                    StartCoroutine(RespawnTowerDelayed(freeSpawnPoint, 2f));
+                    // 🎯 PRIORITY 4: Randomize respawn delay
+                    float randomDelay = Random.Range(minRespawnDelay, maxRespawnDelay);
+                    if (logRespawnDelays)
+                    {
+                        Debug.Log($"[TowerSpawner] 🎲 Tower respawn delay randomized: {randomDelay:F1}s (range: {minRespawnDelay}-{maxRespawnDelay}s)");
+                    }
+                    StartCoroutine(RespawnTowerDelayed(freeSpawnPoint, randomDelay));
+                }
+                else if (logSpawnPointCooldowns)
+                {
+                    Debug.LogWarning($"[TowerSpawner] ⏸️ No free spawn points available (all on cooldown or in use) - respawn delayed");
                 }
             }
         }
     }
     
     /// <summary>
-    /// Get a spawn point that's not currently in use
+    /// Get a spawn point that's not currently in use AND not on cooldown
+    /// 🎯 SMART SPAWNING: Prefers reserved respawn points if available
     /// </summary>
     private Transform GetFreeSpawnPoint()
     {
         if (towerSpawnPoints == null || towerSpawnPoints.Length == 0)
             return null;
+        
+        // 🎯 SMART SPAWNING: Prioritize reserved respawn points first
+        if (useSmartSpawnRotation && _reservedRespawnPoints.Count > 0)
+        {
+            List<Transform> availableReservedPoints = new List<Transform>();
             
+            foreach (Transform point in _reservedRespawnPoints)
+            {
+                if (point != null && !_usedSpawnPoints.Contains(point) && !_spawnPointCooldowns.ContainsKey(point))
+                {
+                    // Check if spawn point is safe (not too close to existing towers)
+                    if (IsSpawnPointSafe(point))
+                    {
+                        availableReservedPoints.Add(point);
+                    }
+                }
+            }
+            
+            if (availableReservedPoints.Count > 0)
+            {
+                Transform selectedPoint = availableReservedPoints[Random.Range(0, availableReservedPoints.Count)];
+                if (logSmartSpawning)
+                {
+                    Debug.Log($"[TowerSpawner] 🎯 SMART RESPAWN: Using reserved spawn point '{selectedPoint.name}' ({availableReservedPoints.Count} reserved points available)");
+                }
+                return selectedPoint;
+            }
+            else if (logSmartSpawning)
+            {
+                Debug.Log($"[TowerSpawner] 🎯 SMART RESPAWN: No reserved points available, checking all spawn points...");
+            }
+        }
+        
+        // Fallback: Check all spawn points (old behavior)
         List<Transform> freePoints = new List<Transform>();
         foreach (Transform point in towerSpawnPoints)
         {
             if (point != null && !_usedSpawnPoints.Contains(point))
             {
+                // 🎯 PRIORITY 2: Check if spawn point is on cooldown
+                if (_spawnPointCooldowns.ContainsKey(point))
+                {
+                    // Skip this point - it's on cooldown
+                    if (logSpawnPointCooldowns)
+                    {
+                        float remainingCooldown = _spawnPointCooldowns[point];
+                        Debug.Log($"[TowerSpawner] ⏱️ Spawn point '{point.name}' skipped - {remainingCooldown:F1}s cooldown remaining");
+                    }
+                    continue;
+                }
+                
+                // 🎯 SMART SPAWNING: Check if spawn point is safe
+                if (!IsSpawnPointSafe(point))
+                {
+                    if (logSmartSpawning)
+                    {
+                        Debug.LogWarning($"[TowerSpawner] ⚠️ Spawn point '{point.name}' too close to existing towers - skipped");
+                    }
+                    continue;
+                }
+                
                 freePoints.Add(point);
             }
         }
         
         if (freePoints.Count > 0)
         {
-            return freePoints[Random.Range(0, freePoints.Count)];
+            Transform selectedPoint = freePoints[Random.Range(0, freePoints.Count)];
+            if (logSpawnPointCooldowns)
+            {
+                Debug.Log($"[TowerSpawner] ✅ Selected free spawn point: '{selectedPoint.name}' ({freePoints.Count} available)");
+            }
+            return selectedPoint;
         }
         
         return null;
+    }
+    
+    /// <summary>
+    /// 🎯 SMART SPAWNING: Check if a spawn point is safe (not too close to existing towers)
+    /// Prevents towers from spawning into each other or too close together
+    /// </summary>
+    private bool IsSpawnPointSafe(Transform spawnPoint)
+    {
+        if (spawnPoint == null) return false;
+        
+        // No need to check if no towers exist yet
+        if (_activeTowers.Count == 0) return true;
+        
+        Vector3 spawnPosition = spawnPoint.position;
+        
+        // Check distance to all active towers
+        foreach (TowerController tower in _activeTowers)
+        {
+            if (tower == null || tower.IsDead) continue;
+            
+            float distance = Vector3.Distance(spawnPosition, tower.transform.position);
+            
+            if (distance < minTowerSeparationDistance)
+            {
+                if (logSmartSpawning)
+                {
+                    Debug.LogWarning($"[TowerSpawner] ⚠️ Spawn point '{spawnPoint.name}' too close to tower '{tower.name}' (distance: {distance:F0} < min: {minTowerSeparationDistance:F0})");
+                }
+                return false; // Too close!
+            }
+        }
+        
+        return true; // Safe to spawn
     }
     
     /// <summary>

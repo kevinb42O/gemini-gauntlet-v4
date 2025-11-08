@@ -1,14 +1,20 @@
 using UnityEngine;
 
 /// <summary>
-/// Continuously rotates the emit point to always look towards the center of the screen
-/// with complete free rotation in all axes.
+/// ✅ SINGLE SOURCE OF TRUTH for emit point rotation.
+/// Continuously rotates the emit point to EXACTLY match camera forward direction.
+/// Uses INSTANT rotation (no lag) to ensure perfect synchronization with particle spawn direction.
+/// 
+/// CRITICAL FIX: Removed smooth rotation (Slerp) that caused dual-hit bug where particles
+/// spawned in camera direction but emit point was still rotating, creating mismatch.
+/// 
+/// This script is the ONLY system that should control emit point rotation!
 /// </summary>
 public class EmitPointScreenCenter : MonoBehaviour
 {
     [Header("Screen Center Targeting")]
     [SerializeField] private bool enableRotation = true;
-    [SerializeField] private float rotationSpeed = 10f;
+    [SerializeField] private float rotationSpeed = 0f; // 0 = INSTANT rotation (no lag) - CRITICAL for shooting accuracy
     [SerializeField] private float targetDistance = 100f; // Distance to project screen center
     
     [Header("Debug")]
@@ -37,62 +43,49 @@ public class EmitPointScreenCenter : MonoBehaviour
         Debug.Log($"[EmitPointScreenCenter] Successfully found camera: {_mainCamera.name}");
     }
     
-    void Update()
+    void LateUpdate()
     {
         if (!enableRotation || _mainCamera == null) return;
         
+        // ✅ CRITICAL: LateUpdate runs AFTER all animations and Update() calls
+        // This ensures emit point ALWAYS points at camera forward, overriding hand animations
         RotateTowardsScreenCenter();
     }
     
     void RotateTowardsScreenCenter()
     {
-        // Calculate screen center world position
-        Vector3 screenCenter = new Vector3(Screen.width * 0.5f, Screen.height * 0.5f, 0f);
-        Ray screenCenterRay = _mainCamera.ScreenPointToRay(screenCenter);
-        _screenCenterWorldPos = screenCenterRay.origin + (screenCenterRay.direction * targetDistance);
+        // ✅ CRITICAL FIX: Use CAMERA FORWARD directly for perfect synchronization
+        // This OVERRIDES all hand animations that try to rotate emit points
+        // LateUpdate() ensures this runs AFTER animator, so animations can't interfere
+        // No more dual-hit bug from animation/rotation conflicts!
+        Vector3 cameraForward = _mainCamera.transform.forward;
         
-        // Calculate direction from emit point to screen center
-        Vector3 directionToCenter = (_screenCenterWorldPos - transform.position).normalized;
+        // Create target rotation directly from camera forward
+        Quaternion targetRotation = Quaternion.LookRotation(cameraForward);
         
-        // Create target rotation
-        Quaternion targetRotation = Quaternion.LookRotation(directionToCenter);
-        
-        // Apply rotation (instant or smooth)
-        if (rotationSpeed <= 0f)
-        {
-            // Instant rotation
-            transform.rotation = targetRotation;
-        }
-        else
-        {
-            // Smooth rotation
-            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, 
-                rotationSpeed * Time.deltaTime);
-        }
+        // ✅ ALWAYS USE INSTANT ROTATION - no lag, no dual hits
+        // Smooth rotation (Slerp) causes desync between emit point and actual fire direction
+        transform.rotation = targetRotation;
         
         // Debug visualization
         if (showDebugRay)
         {
-            Debug.DrawRay(transform.position, directionToCenter * targetDistance, debugRayColor);
-            Debug.DrawLine(transform.position, _screenCenterWorldPos, debugRayColor);
+            // Debug.DrawRay removed for performance
         }
     }
     
     /// <summary>
-    /// Instantly snap to screen center direction (useful for initialization)
+    /// Instantly snap to camera forward direction (useful for initialization)
     /// </summary>
     public void SnapToScreenCenter()
     {
         if (_mainCamera == null) return;
         
-        Vector3 screenCenter = new Vector3(Screen.width * 0.5f, Screen.height * 0.5f, 0f);
-        Ray screenCenterRay = _mainCamera.ScreenPointToRay(screenCenter);
-        _screenCenterWorldPos = screenCenterRay.origin + (screenCenterRay.direction * targetDistance);
+        // ✅ Use camera forward directly
+        Vector3 cameraForward = _mainCamera.transform.forward;
+        transform.rotation = Quaternion.LookRotation(cameraForward);
         
-        Vector3 directionToCenter = (_screenCenterWorldPos - transform.position).normalized;
-        transform.rotation = Quaternion.LookRotation(directionToCenter);
-        
-        Debug.Log("[EmitPointScreenCenter] Snapped to screen center direction");
+        Debug.Log("[EmitPointScreenCenter] Snapped to camera forward direction");
     }
     
     /// <summary>
@@ -105,16 +98,13 @@ public class EmitPointScreenCenter : MonoBehaviour
     }
     
     /// <summary>
-    /// Get the current direction to screen center
+    /// Get the current camera forward direction (single source of truth)
     /// </summary>
     public Vector3 GetScreenCenterDirection()
     {
         if (_mainCamera == null) return Vector3.forward;
         
-        Vector3 screenCenter = new Vector3(Screen.width * 0.5f, Screen.height * 0.5f, 0f);
-        Ray screenCenterRay = _mainCamera.ScreenPointToRay(screenCenter);
-        Vector3 screenCenterWorldPos = screenCenterRay.origin + (screenCenterRay.direction * targetDistance);
-        
-        return (screenCenterWorldPos - transform.position).normalized;
+        // ✅ Return camera forward directly - matches emit point rotation exactly
+        return _mainCamera.transform.forward;
     }
 }

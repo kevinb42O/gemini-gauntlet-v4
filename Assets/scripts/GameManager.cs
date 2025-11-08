@@ -50,6 +50,8 @@ public class GameManager : MonoBehaviour
     [SerializeField] private CleanAAACrouch crouchController;
     [SerializeField] private FloatingTextManager floatingTextManager;
     [SerializeField] private XPManager xpManager;
+    [SerializeField] private PlayerAnimationStateManager playerAnimationStateManager;
+    [SerializeField] private LayeredHandAnimationController layeredHandAnimationController;
     
     [Header("Auto-Discovery")]
     [SerializeField] private bool autoDiscoverSystems = true;
@@ -173,6 +175,12 @@ public class GameManager : MonoBehaviour
         if (xpManager == null)
             xpManager = FindObjectOfType<XPManager>();
         
+        if (playerAnimationStateManager == null)
+            playerAnimationStateManager = FindObjectOfType<PlayerAnimationStateManager>();
+        
+        if (layeredHandAnimationController == null)
+            layeredHandAnimationController = FindObjectOfType<LayeredHandAnimationController>();
+        
         if (logDiscoveryProcess)
         {
             LogDiscoveredSystems();
@@ -241,6 +249,8 @@ public class GameManager : MonoBehaviour
         Debug.Log($"  🦆 CrouchController: {(crouchController != null ? "✅" : "❌")}");
         Debug.Log($"  💬 FloatingTextManager: {(floatingTextManager != null ? "✅" : "❌")}");
         Debug.Log($"  ⭐ XPManager: {(xpManager != null ? "✅" : "❌")}");
+        Debug.Log($"  🎭 PlayerAnimationStateManager: {(playerAnimationStateManager != null ? "✅" : "❌")}");
+        Debug.Log($"  ✋ LayeredHandAnimationController: {(layeredHandAnimationController != null ? "✅" : "❌")}");
     }
     
     // ==========================================
@@ -474,6 +484,20 @@ public class GameManager : MonoBehaviour
         return xpManager;
     }
     
+    public PlayerAnimationStateManager GetPlayerAnimationStateManager()
+    {
+        if (playerAnimationStateManager == null)
+            playerAnimationStateManager = FindObjectOfType<PlayerAnimationStateManager>();
+        return playerAnimationStateManager;
+    }
+    
+    public LayeredHandAnimationController GetLayeredHandAnimationController()
+    {
+        if (layeredHandAnimationController == null)
+            layeredHandAnimationController = FindObjectOfType<LayeredHandAnimationController>();
+        return layeredHandAnimationController;
+    }
+    
     /// <summary>
     /// Refresh system references (useful after scene changes)
     /// </summary>
@@ -502,6 +526,8 @@ public class GameManager : MonoBehaviour
         crouchController = null;
         floatingTextManager = null;
         xpManager = null;
+        playerAnimationStateManager = null;
+        layeredHandAnimationController = null;
         
         // Re-discover systems
         AutoDiscoverSystems();

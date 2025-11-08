@@ -79,6 +79,18 @@ public class SkullEnemy : MonoBehaviour, IDamageable
     [Tooltip("Glow intensity multiplier when hit (default 1000).")]
     public float hitGlowIntensity = 1000f;
 
+    [Header("Rope Tether / Ally System")]
+    [Tooltip("Optional: Particle effect to show when tethered (e.g., green glow). Leave empty to use color change only.")]
+    public GameObject tetheredParticleEffect;
+    
+    [Tooltip("Name of the hostile particle effect to disable when tethered (e.g., 'FireMeshGlow'). Leave empty to disable all.")]
+    public string hostileParticleEffectName = "FireMeshGlow";
+    
+    [Tooltip("Color for particle effects when hostile (default red) - ONLY used if no tetheredParticleEffect assigned")]
+    public Color hostileParticleColor = new Color(1f, 0.2f, 0.2f, 1f); // Red
+    [Tooltip("Color for particle effects when tethered/friendly (default green) - ONLY used if no tetheredParticleEffect assigned")]
+    public Color friendlyParticleColor = new Color(0.2f, 1f, 0.2f, 1f); // Green
+
     [Header("Audio Settings")]
     [SerializeField] [Range(0f, 1f)] private float chatterVolume = 0.7f;
     [SerializeField] [Range(0f, 1f)] private float attackVolume = 0.8f;
@@ -158,6 +170,13 @@ public class SkullEnemy : MonoBehaviour, IDamageable
     private Transform _primaryTargetTransform;
     private bool _primaryTargetIsPlayer;
     private CompanionCore _primaryTargetCompanion;
+    
+    // --- Rope Tether State ---
+    private bool _isTethered = false;
+    private Transform _ropeAnchor = null; // The AdvancedGrapplingSystem or player who tethered us
+    private object _ropeState = null; // Reference to the RopeState for constraint info
+    private float _maxRopeLength = 5000f; // Maximum rope length before constraint
+    private GameObject _activeTetheredParticleInstance = null; // Spawned tethered particle effect
     
     // --- Hit Glow Components ---
     private Material _originalMaterial;
@@ -240,6 +259,9 @@ public class SkullEnemy : MonoBehaviour, IDamageable
         
         // Initialize hit glow materials
         InitializeHitGlowMaterials();
+        
+        // Initialize particle colors to hostile (red)
+        SetParticleColor(hostileParticleColor);
     }
 
     void OnEnable()
@@ -352,6 +374,13 @@ public class SkullEnemy : MonoBehaviour, IDamageable
         Vector3 desiredVelocity = GetDesiredVelocityForCurrentState();
         desiredVelocity += separationVector; // Apply cached separation force
 
+        // === ROPE CONSTRAINT PHYSICS (Tethered Skulls) ===
+        // If tethered, apply rope constraint to follow player within max rope length
+        if (_isTethered && _ropeAnchor != null)
+        {
+            desiredVelocity = ApplyRopeConstraint(desiredVelocity);
+        }
+
         // ⚡ OPTIMIZED GROUND AVOIDANCE: Check only 5 times per second instead of 50-60
         // Reduces raycasts from 25,000/sec to 500/sec (50x reduction!)
         // Safety: EnforceAbsoluteMinimumHeight() still runs every frame as emergency backup
@@ -396,6 +425,13 @@ public class SkullEnemy : MonoBehaviour, IDamageable
             _skullChatterHandle = SoundHandle.Invalid;
         }
         
+        // Clean up tethered particle effect if active
+        if (_activeTetheredParticleInstance != null)
+        {
+            Destroy(_activeTetheredParticleInstance);
+            _activeTetheredParticleInstance = null;
+        }
+        
         SkullEnemyManager.Unregister(this);
     }
     
@@ -415,6 +451,32 @@ public class SkullEnemy : MonoBehaviour, IDamageable
     void OnTriggerEnter(Collider other)
     {
         if (isDeadInternal) return;
+
+        // === TETHERED SKULL ALLY LOGIC ===
+        // Tethered skulls kill enemy skulls on contact
+        if (_isTethered)
+        {
+            SkullEnemy enemySkull = other.GetComponent<SkullEnemy>();
+            if (enemySkull != null && !enemySkull.IsTethered() && !enemySkull.IsDead())
+            {
+                Debug.Log($"[SkullEnemy] 💥 Tethered skull killed enemy skull: {enemySkull.name}");
+                enemySkull.Die(false); // Kill the enemy skull
+                return; // Tethered skull doesn't die from hitting enemies
+            }
+        }
+
+        // === ENEMY SKULL HITTING TETHERED SKULL ===
+        // Enemy skulls die if they hit a tethered (friendly) skull
+        SkullEnemy targetSkull = other.GetComponent<SkullEnemy>();
+        if (targetSkull != null && targetSkull.IsTethered() && !_isTethered && !targetSkull.IsDead())
+        {
+            Debug.Log($"[SkullEnemy] 💥 Enemy skull died hitting tethered skull: {targetSkull.name}");
+            Die(false); // This enemy skull dies
+            return;
+        }
+
+        // === NORMAL SKULL ATTACK LOGIC (non-tethered skulls attack player/companions) ===
+        if (_isTethered) return; // Tethered skulls don't attack player/companions
 
         if (!other.CompareTag("Player") && !other.CompareTag("Companion"))
         {
@@ -959,6 +1021,12 @@ public class SkullEnemy : MonoBehaviour, IDamageable
         if (isDeadInternal) return;
         isDeadInternal = true;
 
+        // ✅ CRITICAL: Release rope tether when skull dies
+        if (_isTethered)
+        {
+            OnRopeReleased();
+        }
+
         // ✅ CRITICAL FIX: Stop chatter sound INSTANTLY when skull dies
         // Don't wait for OnDisable() which happens 3 seconds later - player needs immediate silence!
         if (_skullChatterHandle != null && _skullChatterHandle.IsValid)
@@ -1063,6 +1131,13 @@ public class SkullEnemy : MonoBehaviour, IDamageable
     {
         targetChanged = false;
 
+        // === TETHERED SKULLS CHASE ENEMY SKULLS, NOT PLAYER ===
+        if (_isTethered)
+        {
+            return TryFindEnemySkullTarget(out targetChanged);
+        }
+
+        // === NORMAL TARGETING (player/companions) ===
         // Validate current target first
         if (_primaryTargetTransform != null)
         {
@@ -1136,6 +1211,64 @@ public class SkullEnemy : MonoBehaviour, IDamageable
         if (previousTarget != null)
         {
             targetChanged = true;
+        }
+
+        _primaryTargetTransform = null;
+        _primaryTargetCompanion = null;
+        _primaryTargetIsPlayer = false;
+
+        return false;
+    }
+
+    /// <summary>
+    /// Tethered skulls target nearby ENEMY skulls instead of player
+    /// </summary>
+    private bool TryFindEnemySkullTarget(out bool targetChanged)
+    {
+        targetChanged = false;
+        Transform previousTarget = _primaryTargetTransform;
+
+        // Find all skulls in range
+        SkullEnemy nearestEnemySkull = null;
+        float nearestSqrDistance = float.MaxValue;
+        float searchRange = maxHuntingRange; // Use same range as normal hunting
+        float searchRangeSqr = searchRange * searchRange;
+
+        // Find all active skulls (use newer Unity API)
+        SkullEnemy[] allSkulls = FindObjectsByType<SkullEnemy>(FindObjectsSortMode.None);
+        foreach (SkullEnemy skull in allSkulls)
+        {
+            // Skip self, dead skulls, and other tethered skulls
+            if (skull == this || skull.IsDead() || skull.IsTethered())
+                continue;
+
+            float sqrDist = (transform.position - skull.transform.position).sqrMagnitude;
+            if (sqrDist < nearestSqrDistance && sqrDist <= searchRangeSqr)
+            {
+                nearestEnemySkull = skull;
+                nearestSqrDistance = sqrDist;
+            }
+        }
+
+        if (nearestEnemySkull != null)
+        {
+            _primaryTargetTransform = nearestEnemySkull.transform;
+            _primaryTargetIsPlayer = false;
+            _primaryTargetCompanion = null;
+            targetChanged = previousTarget != _primaryTargetTransform;
+            
+            if (targetChanged)
+            {
+                Debug.Log($"[SkullEnemy] 🎯 Tethered skull locked onto enemy: {nearestEnemySkull.name} (Distance: {Mathf.Sqrt(nearestSqrDistance):F0})");
+            }
+            return true;
+        }
+
+        // No enemy skulls found - clear target and just follow rope physics
+        if (previousTarget != null)
+        {
+            targetChanged = true;
+            Debug.Log($"[SkullEnemy] 🔍 Tethered skull lost target - following rope physics only");
         }
 
         _primaryTargetTransform = null;
@@ -1277,6 +1410,204 @@ public class SkullEnemy : MonoBehaviour, IDamageable
         {
             TransitionToState(SkullAIState.Hunting);
         }
+    }
+
+    #endregion
+
+    #region Rope Tether / Ally System
+
+    /// <summary>
+    /// Called by AdvancedGrapplingSystem when rope attaches to this skull
+    /// </summary>
+    public void OnRopeTethered(Transform ropeOwner, object ropeStateRef = null)
+    {
+        _isTethered = true;
+        _ropeAnchor = ropeOwner;
+        _ropeState = ropeStateRef;
+        
+        // === PARTICLE SYSTEM SWAP ===
+        if (tetheredParticleEffect != null)
+        {
+            // Spawn tethered particle effect
+            _activeTetheredParticleInstance = Instantiate(tetheredParticleEffect, transform.position, transform.rotation, transform);
+            Debug.Log($"[SkullEnemy] ✨ Spawned tethered particle effect: {tetheredParticleEffect.name}");
+            
+            // Disable hostile particle effects by name or all if no name specified
+            DisableHostileParticles();
+        }
+        else
+        {
+            // Fallback: Change particle color to green (old behavior)
+            SetParticleColor(friendlyParticleColor);
+        }
+        
+        Debug.Log($"[SkullEnemy] 🟢 Tethered by {ropeOwner.name} - Now FRIENDLY! Hunting enemy skulls...");
+    }
+
+    /// <summary>
+    /// Called by AdvancedGrapplingSystem when rope detaches from this skull
+    /// </summary>
+    public void OnRopeReleased()
+    {
+        _isTethered = false;
+        _ropeAnchor = null;
+        _ropeState = null;
+        
+        // === PARTICLE SYSTEM RESTORE ===
+        if (_activeTetheredParticleInstance != null)
+        {
+            // Destroy tethered particle effect
+            Destroy(_activeTetheredParticleInstance);
+            _activeTetheredParticleInstance = null;
+            Debug.Log($"[SkullEnemy] 🗑️ Destroyed tethered particle effect");
+            
+            // Re-enable hostile particle effects
+            EnableHostileParticles();
+        }
+        else
+        {
+            // Fallback: Change particle color back to red (old behavior)
+            SetParticleColor(hostileParticleColor);
+        }
+        
+        Debug.Log($"[SkullEnemy] 🔴 Rope released - Now HOSTILE! Hunting player...");
+    }
+
+    /// <summary>
+    /// Check if this skull is currently tethered (friendly)
+    /// </summary>
+    public bool IsTethered()
+    {
+        return _isTethered && _ropeAnchor != null;
+    }
+
+    /// <summary>
+    /// Changes the color of all child particle systems (e.g., FireMeshGlow)
+    /// </summary>
+    private void SetParticleColor(Color newColor)
+    {
+        if (cachedParticles == null || cachedParticles.Length == 0) return;
+
+        foreach (ParticleSystem ps in cachedParticles)
+        {
+            if (ps == null) continue;
+
+            var main = ps.main;
+            main.startColor = newColor;
+            
+            // Also update color over lifetime if it exists
+            var colorOverLifetime = ps.colorOverLifetime;
+            if (colorOverLifetime.enabled)
+            {
+                Gradient grad = new Gradient();
+                grad.SetKeys(
+                    new GradientColorKey[] { new GradientColorKey(newColor, 0f), new GradientColorKey(newColor, 1f) },
+                    new GradientAlphaKey[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0f, 1f) }
+                );
+                colorOverLifetime.color = grad;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Disables hostile particle effects by name (or all if no name specified)
+    /// </summary>
+    private void DisableHostileParticles()
+    {
+        if (cachedParticles == null || cachedParticles.Length == 0) return;
+
+        foreach (ParticleSystem ps in cachedParticles)
+        {
+            if (ps == null) continue;
+
+            // If name filter specified, only disable matching particles
+            if (!string.IsNullOrEmpty(hostileParticleEffectName))
+            {
+                if (ps.name.Contains(hostileParticleEffectName))
+                {
+                    ps.gameObject.SetActive(false);
+                    Debug.Log($"[SkullEnemy] 🚫 Disabled hostile particle: {ps.name}");
+                }
+            }
+            else
+            {
+                // No name filter - disable all particles
+                ps.gameObject.SetActive(false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Re-enables hostile particle effects
+    /// </summary>
+    private void EnableHostileParticles()
+    {
+        if (cachedParticles == null || cachedParticles.Length == 0) return;
+
+        foreach (ParticleSystem ps in cachedParticles)
+        {
+            if (ps == null) continue;
+
+            // If name filter specified, only enable matching particles
+            if (!string.IsNullOrEmpty(hostileParticleEffectName))
+            {
+                if (ps.name.Contains(hostileParticleEffectName))
+                {
+                    ps.gameObject.SetActive(true);
+                    Debug.Log($"[SkullEnemy] ✅ Re-enabled hostile particle: {ps.name}");
+                }
+            }
+            else
+            {
+                // No name filter - enable all particles
+                ps.gameObject.SetActive(true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies rope constraint physics when skull is tethered
+    /// Skull gets dragged by player when rope is stretched beyond max length
+    /// PLAYER WINS TUG-OF-WAR - Skull follows player, not vice versa!
+    /// </summary>
+    private Vector3 ApplyRopeConstraint(Vector3 desiredVelocity)
+    {
+        if (_ropeAnchor == null) return desiredVelocity;
+
+        Vector3 toAnchor = _ropeAnchor.position - transform.position;
+        float currentDistance = toAnchor.magnitude;
+
+        // 💪 PLAYER ALWAYS WINS - Strong pull toward player at ALL distances beyond initial
+        if (currentDistance > _maxRopeLength * 0.5f) // Start pulling at 50% of max (2500 units)
+        {
+            float overshoot = currentDistance - (_maxRopeLength * 0.5f);
+            Vector3 pullDirection = toAnchor.normalized;
+
+            // 🔥 VERY STRONG PULL - Skull gets yanked toward player
+            // Scale force based on distance: farther = stronger pull
+            float pullMultiplier = Mathf.Clamp(overshoot / 500f, 1f, 10f); // 1x to 10x force scaling
+            float pullStrength = moveSpeed * 4f * pullMultiplier; // Much stronger base pull
+            Vector3 pullForce = pullDirection * pullStrength;
+
+            // OVERRIDE skull's desired movement - rope force dominates
+            float ropeDominance = Mathf.Clamp01(overshoot / 1000f); // 0-1000 unit transition
+            desiredVelocity = Vector3.Lerp(desiredVelocity, pullForce, ropeDominance);
+
+            // Remove ALL velocity component going away from anchor
+            float velocityAway = Vector3.Dot(desiredVelocity, -pullDirection);
+            if (velocityAway > 0)
+            {
+                desiredVelocity -= -pullDirection * velocityAway;
+            }
+            
+            // Add extra snap-back force when very far
+            if (currentDistance > _maxRopeLength * 0.8f) // Beyond 80% (4000 units)
+            {
+                desiredVelocity += pullDirection * moveSpeed * 3f; // Extra boost
+            }
+        }
+
+        return desiredVelocity;
     }
 
     #endregion

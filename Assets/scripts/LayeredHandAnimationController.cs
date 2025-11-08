@@ -263,12 +263,111 @@ public class LayeredHandAnimationController : MonoBehaviour
         GetCurrentRightHand()?.PlayOpenDoorAnimation();
     }
     
+    // === SWORD MODE SYSTEM ===
+    
+    /// <summary>
+    /// Enable sword mode for LEFT hand - switches to sword idle animations.
+    /// When enabled, ONLY sword animations play on base layer (no normal movement).
+    /// </summary>
+    public void EnableLeftHandSwordMode()
+    {
+        var leftHand = GetCurrentLeftHand();
+        if (leftHand != null)
+        {
+            leftHand.EnableSwordMode();
+            Debug.Log("[LayeredHandAnimationController] ⚔️ LEFT hand sword mode ENABLED");
+        }
+    }
+    
+    /// <summary>
+    /// Disable sword mode for LEFT hand - returns to normal movement animations.
+    /// </summary>
+    public void DisableLeftHandSwordMode()
+    {
+        var leftHand = GetCurrentLeftHand();
+        if (leftHand != null)
+        {
+            leftHand.DisableSwordMode();
+            Debug.Log("[LayeredHandAnimationController] ⚔️ LEFT hand sword mode DISABLED");
+        }
+    }
+    
+    /// <summary>
+    /// Enable sword mode for RIGHT hand - switches to sword idle animations.
+    /// When enabled, ONLY sword animations play on base layer (no normal movement).
+    /// </summary>
+    public void EnableRightHandSwordMode()
+    {
+        var rightHand = GetCurrentRightHand();
+        if (rightHand != null)
+        {
+            rightHand.EnableSwordMode();
+            Debug.Log("[LayeredHandAnimationController] ⚔️ RIGHT hand sword mode ENABLED");
+        }
+    }
+    
+    /// <summary>
+    /// Disable sword mode for RIGHT hand - returns to normal movement animations.
+    /// </summary>
+    public void DisableRightHandSwordMode()
+    {
+        var rightHand = GetCurrentRightHand();
+        if (rightHand != null)
+        {
+            rightHand.DisableSwordMode();
+            Debug.Log("[LayeredHandAnimationController] ⚔️ RIGHT hand sword mode DISABLED");
+        }
+    }
+    
     // === MOVEMENT METHODS ===
     public void PlayJumpBoth() => SetMovementState((int)IndividualLayeredHandController.MovementState.Jump);
     public void PlayLandBoth() => SetMovementState((int)IndividualLayeredHandController.MovementState.Land);
     public void PlaySlideBoth() => SetMovementState((int)IndividualLayeredHandController.MovementState.Slide);
     public void PlayDiveBoth() => SetMovementState((int)IndividualLayeredHandController.MovementState.Dive);
     public void PlayIdleBoth() => SetMovementState((int)IndividualLayeredHandController.MovementState.Idle);
+    
+    // === GRAPPLING METHODS ===
+    
+    /// <summary>
+    /// Play rope shoot animation on specified hand
+    /// </summary>
+    public void PlayRopeShoot(bool isLeftHand)
+    {
+        if (enableDebugLogs)
+            Debug.Log($"[LayeredHandAnimationController] PlayRopeShoot called for {(isLeftHand ? "LEFT" : "RIGHT")} hand");
+        
+        var hand = isLeftHand ? GetCurrentLeftHand() : GetCurrentRightHand();
+        
+        if (hand == null)
+        {
+            Debug.LogError($"[LayeredHandAnimationController] {(isLeftHand ? "LEFT" : "RIGHT")} hand controller is NULL!");
+            return;
+        }
+        
+        if (enableDebugLogs)
+            Debug.Log($"[LayeredHandAnimationController] Calling PlayRopeShoot on {hand.name}");
+        
+        hand.PlayRopeShoot();
+    }
+    
+    /// <summary>
+    /// Stop rope animation on specified hand
+    /// </summary>
+    public void StopRopeAnimation(bool isLeftHand)
+    {
+        if (enableDebugLogs)
+            Debug.Log($"[LayeredHandAnimationController] StopRopeAnimation called for {(isLeftHand ? "LEFT" : "RIGHT")} hand");
+        
+        var hand = isLeftHand ? GetCurrentLeftHand() : GetCurrentRightHand();
+        
+        if (hand == null)
+        {
+            Debug.LogError($"[LayeredHandAnimationController] {(isLeftHand ? "LEFT" : "RIGHT")} hand controller is NULL!");
+            return;
+        }
+        
+        hand.StopRopeAnimation();
+    }
     
     // === LEGACY COMPATIBILITY METHODS ===
     /// <summary>

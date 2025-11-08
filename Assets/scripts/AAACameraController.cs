@@ -1,13 +1,13 @@
-using UnityEngine;
+﻿using UnityEngine;
 
 /// <summary>
 /// AAA-Quality FPS Camera Controller with smooth movement, dynamic FOV, and immersive effects
 /// Features: Camera bob, smooth look, FOV changes, recoil system, and more!
 /// 
-/// 🤝 BFFL INTEGRATION: Aerial Trick System ↔ Wall Jump System
+///  BFFL INTEGRATION: Aerial Trick System â†” Wall Jump System
 /// These systems are now best friends forever! Key behaviors:
-/// - Aerial trick → wall jump: Instantly cancels reconciliation for seamless combo flow
-/// - Wall jump → aerial trick: Clears reconciliation states for clean trick restart
+/// - Aerial trick â†’ wall jump: Instantly cancels reconciliation for seamless combo flow
+/// - Wall jump â†’ aerial trick: Clears reconciliation states for clean trick restart
 /// - Both systems respect each other's camera control and transition smoothly
 /// </summary>
 public class AAACameraController : MonoBehaviour
@@ -17,6 +17,8 @@ public class AAACameraController : MonoBehaviour
     [SerializeField] private float verticalLookLimit = 90f;
     [SerializeField] private bool invertY = false;
     [SerializeField] private AnimationCurve sensitivityCurve = AnimationCurve.Linear(0, 1, 1, 1); // Flat curve for consistent feel
+    [Tooltip("Horizontal rotation speed multiplier during aerial tricks (0.2 = 20% speed)")]
+    [SerializeField] [Range(0.1f, 1f)] private float trickYawSensitivity = 0.3f; // Much slower horizontal during tricks
     
     [Header("=== SMOOTHING ===")]
     [Tooltip("Frame-based smoothing (0 = raw input, 0.1-0.3 = AAA feel, 0.5+ = sluggish)")]
@@ -24,29 +26,6 @@ public class AAACameraController : MonoBehaviour
     [SerializeField] private float positionSmoothing = 12f; // Increased for smoother position changes
     [SerializeField] private bool enableSmoothing = true;
     [SerializeField] private bool enableMotionPrediction = true; // NEW: Predict fast movements
-    
-    [Header("=== HEAD BOB (Call of Duty Style - Realistic) ===")]
-    [SerializeField] private bool enableHeadBob = true;
-    [Tooltip("Vertical bob intensity (scaled for 320-unit character)")]
-    [SerializeField] private float headBobVerticalIntensity = 12f; // Scaled up 6.4x for large character
-    [Tooltip("Horizontal sway intensity (scaled for 320-unit character)")]
-    [SerializeField] private float headBobHorizontalIntensity = 6f; // Scaled up 6.4x for large character
-    [Tooltip("Forward lean intensity (scaled for 320-unit character)")]
-    [SerializeField] private float headBobForwardIntensity = 4f; // Scaled up 6.4x for large character
-    [Tooltip("Walk frequency (steps per second)")]
-    [SerializeField] private float walkBobFrequency = 1.4f; // Slower for large character mass
-    [Tooltip("Sprint frequency (steps per second)")]
-    [SerializeField] private float sprintBobFrequency = 2.0f; // Slower sprint for large character
-    [Tooltip("Velocity influence on bob intensity (0-1)")]
-    [SerializeField] [Range(0f, 1f)] private float velocityInfluence = 0.4f; // Lower for smoother feel
-    [Tooltip("Smoothness of bob transitions (higher = smoother)")]
-    [SerializeField] private float headBobSmoothness = 8f; // Increased for butter-smooth transitions
-    [Tooltip("Footstep impact sharpness (1.0 = pure sine, higher = sharper steps)")]
-    [SerializeField] private float footstepSharpness = 0.7f; // Lower = smoother, less snappy steps
-    [Tooltip("Enable subtle head tilt on steps (realistic weight distribution)")]
-    [SerializeField] private bool enableStepTilt = true;
-    [Tooltip("Maximum tilt angle per step (degrees)")]
-    [SerializeField] private float maxStepTiltAngle = 1.2f; // Subtle tilt for large character
     
     [Header("=== DYNAMIC FOV ===")]
     [SerializeField] private float baseFOV = 100f; // Walk/Normal FOV
@@ -82,7 +61,7 @@ public class AAACameraController : MonoBehaviour
     [Header("=== WALL JUMP CAMERA TILT (AAA QUALITY) ===")]
     [Tooltip("Enable dynamic camera tilt during wall jumps")]
     [SerializeField] private bool enableWallJumpTilt = true;
-    [Tooltip("Maximum tilt angle during wall jump (degrees) - AAA standard: 8-12°")]
+    [Tooltip("Maximum tilt angle during wall jump (degrees) - AAA standard: 8-12Â°")]
     [SerializeField] private float wallJumpMaxTiltAngle = 10f;
     [Tooltip("How quickly camera tilts into wall jump (higher = snappier)")]
     [SerializeField] private float wallJumpTiltSpeed = 25f;
@@ -111,7 +90,7 @@ public class AAACameraController : MonoBehaviour
     [Tooltip("Show debug logs for dynamic tilt")]
     [SerializeField] private bool showDynamicTiltDebug = false;
     
-    [Header("=== 🎪 AERIAL FREESTYLE TRICK SYSTEM (REVOLUTIONARY) ===")]
+    [Header("===  AERIAL FREESTYLE TRICK SYSTEM (REVOLUTIONARY) ===")]
     [Tooltip("Enable the mind-bending aerial camera trick system")]
     [SerializeField] private bool enableAerialFreestyle = true;
     [Tooltip("Middle mouse click acts as trick jump (auto-engages freestyle)")]
@@ -137,7 +116,7 @@ public class AAACameraController : MonoBehaviour
     [Tooltip("Roll strength multiplier (0 = no roll, 1 = full roll)")]
     [SerializeField] [Range(0f, 1f)] private float rollStrength = 0.35f;
     
-    [Header("🎪 MOMENTUM PHYSICS SYSTEM (SKATE GAME FEEL)")]
+    [Header("ðŸŽª MOMENTUM PHYSICS SYSTEM (SKATE GAME FEEL)")]
     [Tooltip("Enable momentum-based rotation (flick and let it spin like Tony Hawk/Skate)")]
     [SerializeField] private bool enableMomentumPhysics = true;
     [Tooltip("How quickly input builds velocity (higher = more responsive to flicks)")]
@@ -159,31 +138,11 @@ public class AAACameraController : MonoBehaviour
     [SerializeField] private float trickFOVBoost = 15f;
     [Tooltip("Speed of FOV transition during tricks")]
     [SerializeField] private float trickFOVSpeed = 12f;
-    [Tooltip("Landing reconciliation duration (industry standard: 0.5-0.8 seconds)")]
-    [SerializeField] private float landingReconciliationDuration = 0.6f;
-    [Tooltip("Reconciliation easing curve for cinematic feel")]
+    [Tooltip("Camera return to neutral duration after landing (smooth pitch/roll reset)")]
+    [SerializeField] private float cameraReturnDuration = 0.3f;
+    [Tooltip("Easing curve for camera return (reused from old reconciliation system)")]
     [SerializeField] private AnimationCurve reconciliationCurve = AnimationCurve.EaseInOut(0, 0, 1, 1);
-    [Tooltip("Grace period after landing before reconciliation starts (seconds)")]
-    [SerializeField] private float landingGracePeriod = 0.12f;
-    [Tooltip("Mouse input deadzone to prevent sensor drift during reconciliation")]
-    [SerializeField] private float mouseInputDeadzone = 0.01f;
-    [Tooltip("Allow player to cancel reconciliation with mouse input (player-first)")]
-    [SerializeField] private bool allowPlayerCancelReconciliation = true;
-    
-    [Header("🎮 KEYBOARD ROLL CONTROLS")]
-    [Tooltip("Enable Q/E keyboard roll controls during tricks")]
-    [SerializeField] private bool enableKeyboardRoll = true;
-    [Tooltip("Maximum roll speed when fully accelerated (degrees/second)")]
-    [SerializeField] private float keyboardRollMaxSpeed = 360f;
-    [Tooltip("Time to reach max speed when holding button (seconds)")]
-    [SerializeField] private float keyboardRollAccelTime = 1.2f;
-    [Tooltip("Momentum fade-out rate when released (0-1, higher = faster fade)")]
-    [Range(0f, 1f)]
-    [SerializeField] private float keyboardRollDecayRate = 0.05f;
-    [Tooltip("Key for rolling left")]
-    [SerializeField] private KeyCode rollLeftKey = KeyCode.Q;
-    [Tooltip("Key for rolling right")]
-    [SerializeField] private KeyCode rollRightKey = KeyCode.E;
+    // ðŸŽ¯ REMOVED: Grace period, mouse deadzone, cancel reconciliation - no longer needed!
     
     [Tooltip("Minimum air time before tricks are allowed (seconds)")]
     [SerializeField] private float minAirTimeForTricks = 0.15f;
@@ -196,7 +155,7 @@ public class AAACameraController : MonoBehaviour
     [Tooltip("Rotation threshold for 'clean landing' (degrees from upright)")]
     [SerializeField] private float cleanLandingThreshold = 25f;
     
-    [Header("🎬 TIME DILATION (CINEMATIC SLOW-MO)")]
+    [Header("ðŸŽ¬ TIME DILATION (CINEMATIC SLOW-MO)")]
     [Tooltip("Enable time dilation during tricks (slow-motion effect)")]
     [SerializeField] private bool enableTimeDilation = true;
     [Tooltip("Time scale during tricks (0.5 = half speed, 1.0 = normal)")]
@@ -208,7 +167,7 @@ public class AAACameraController : MonoBehaviour
     [Tooltip("Distance from ground to start ramping out (units)")]
     [SerializeField] private float landingAnticipationDistance = 3f;
     
-    [Header("🛡️ EMERGENCY RECOVERY SYSTEM (PHASE 1)")]
+    [Header("ðŸ›¡ï¸ EMERGENCY RECOVERY SYSTEM (PHASE 1)")]
     [Tooltip("Enable emergency recovery and safety systems")]
     [SerializeField] private bool enableEmergencyRecovery = true;
     [Tooltip("Key to force upright camera (emergency reset)")]
@@ -267,7 +226,7 @@ public class AAACameraController : MonoBehaviour
     private float yawStart;
     private Vector3 referenceUp;
     
-    // 🔥 CRITICAL FIX: Store base local position to prevent drift
+    //  CRITICAL FIX: Store base local position to prevent drift
     private Vector3 baseLocalPosition = Vector3.zero;
     
     // Look rotation
@@ -317,19 +276,19 @@ public class AAACameraController : MonoBehaviour
     private float dynamicWallTiltTarget = 0f;
     private float dynamicWallTiltVelocity = 0f;
     
-    // 🎪 AERIAL FREESTYLE TRICK SYSTEM - STATE MACHINE (PHASE 1)
+    //  AERIAL FREESTYLE TRICK SYSTEM - STATE MACHINE (SIMPLIFIED)
     /// <summary>
-    /// Trick system states - guarantees valid transitions only
+    /// Trick system states - SIMPLIFIED (reconciliation states removed!)
+    ///  Player body now rotates with yaw, so no reconciliation needed!
     /// </summary>
     public enum TrickSystemState
     {
         Grounded,           // On ground, ready to jump
         JumpInitiated,      // Jump triggered, waiting for airborne confirmation
         Airborne,           // In air, tricks not yet active
-        FreestyleActive,    // Performing tricks (camera independent)
-        LandingApproach,    // Approaching ground (time dilation ramp out)
-        Reconciling,        // Post-landing camera snap to reality
-        TransitionCleanup   // Final cleanup before returning to Grounded
+        FreestyleActive,    // Performing tricks (camera independent for pitch/roll only!)
+        LandingApproach     // Approaching ground (time dilation ramp out)
+        //  REMOVED: Reconciling, TransitionCleanup - no longer needed!
     }
     
     private TrickSystemState _trickState = TrickSystemState.Grounded;
@@ -339,16 +298,16 @@ public class AAACameraController : MonoBehaviour
     // Legacy boolean flags (kept for backward compatibility, but state machine is source of truth)
     private bool isFreestyleModeActive = false;
     private bool wasAirborneLastFrame = false;
-    private bool wasReconciling = false; // Track reconciliation state for smooth handoff
+    //  RECONCILIATION REMOVED: wasReconciling variable deleted - no longer needed!
     private float airborneStartTime = 0f;
-    private Quaternion freestyleRotation = Quaternion.identity; // Camera's independent rotation during tricks
+    private Quaternion freestyleRotation = Quaternion.identity; // Camera's independent rotation during tricks (pitch/roll only now!)
     
-    // 🎮 PRO JUMP MECHANICS FOR TRICKS (hold = higher jump, tap = small jump)
+    //  PRO JUMP MECHANICS FOR TRICKS (hold = higher jump, tap = small jump)
     private bool isHoldingScrollWheelButton = false;
     private float scrollWheelButtonPressTime = 0f;
     private bool trickJumpTriggered = false; // Track if we triggered a trick jump this frame
     
-    // 🎬 TIME DILATION STATE (Now managed by TimeDilationManager)
+    //  TIME DILATION STATE (Now managed by TimeDilationManager)
     private TimeDilationManager timeDilationManager;
     private bool wasTimeDilationRequested = false;
     private Quaternion freestyleRotationVelocity = Quaternion.identity; // For smooth damping
@@ -358,32 +317,24 @@ public class AAACameraController : MonoBehaviour
     private float totalRotationX = 0f; // Track total pitch rotation (backflips/frontflips)
     private float totalRotationY = 0f; // Track total yaw rotation (spins)
     private float totalRotationZ = 0f; // Track total roll rotation (barrel rolls)
-    private float keyboardRollVelocity = 0f; // Smooth keyboard roll velocity (momentum-based)
-    private bool isReconciling = false; // Are we snapping back to reality after landing?
-    private float reconciliationStartTime = 0f;
-    private float reconciliationProgress = 0f; // 0 to 1 for time-normalized blend
-    private Quaternion reconciliationStartRotation = Quaternion.identity;
-    private Quaternion reconciliationTargetRotation = Quaternion.identity;
-    private float landingTime = 0f; // When we landed (for grace period)
-    private bool isInLandingGrace = false; // Are we in grace period?
+    //  RECONCILIATION REMOVED: No longer needed - player body rotates with yaw!
     private float lastRotationSpeed = 0f; // For motion blur intensity
     
-    // 🔥 SKATE-STYLE ENHANCEMENTS
+    //  SKATE-STYLE ENHANCEMENTS
     private float freestyleModeStartTime = 0f; // When freestyle mode was activated
     private float currentRotationSpeedMultiplier = 1f; // Analog speed control
     private Vector2 lastRawInput = Vector2.zero; // Track input magnitude for analog control
     private bool isInInitialBurst = false; // Are we in the flick-it burst phase?
     
-    // 🎪 MOMENTUM PHYSICS SYSTEM (THE GEM - SKATE GAME FEEL)
-    private Vector2 angularVelocity = Vector2.zero; // Persistent rotation velocity (pitch, yaw)
-    private float rollVelocity = 0f; // Separate roll velocity for varial flips
+    //  MOMENTUM PHYSICS SYSTEM (THE GEM - SKATE GAME FEEL)
+    private Vector2 angularVelocity = Vector2.zero; // Persistent rotation velocity (PITCH ONLY - Y component)
     private bool isFlickBurstActive = false; // Flick burst for initial impact
     private float flickBurstStartTime = 0f; // When the flick burst started
     private Vector2 lastFlickDirection = Vector2.zero; // Track flick direction for burst
     private Vector2 smoothedInput = Vector2.zero; // Smoothed input for momentum system
     private Vector2 inputVelocity = Vector2.zero; // Velocity for input smoothing
     
-    // 🛡️ EMERGENCY RECOVERY SYSTEM (PHASE 1)
+    //  EMERGENCY RECOVERY SYSTEM (PHASE 1)
     private int _emergencyResetCount = 0;
     private float _lastEmergencyResetTime = -999f;
     private const float EMERGENCY_RESET_COOLDOWN = 5f;
@@ -405,14 +356,6 @@ public class AAACameraController : MonoBehaviour
     private float idleSwayTime = 0f;
     private Vector3 idleSwayOffset = Vector3.zero;
     
-    // Head bob system - COD style
-    private float headBobTimer = 0f;
-    private Vector3 headBobOffset = Vector3.zero;
-    private float currentBobFrequency = 1.8f;
-    private float currentBobIntensity = 0f;
-    private float lastStepPhase = 0f;
-    private float stepTiltAngle = 0f;
-    private float stepTiltVelocity = 0f;
     private PlayerEnergySystem energySystem;
     
     // Motion prediction
@@ -437,7 +380,7 @@ public class AAACameraController : MonoBehaviour
     private Vector3 lastCameraRotationEuler = Vector3.zero;
     private float rotationDelta = 0f;
     
-    // 🛡️ AAA PAUSE DETECTION SYSTEM (Prevents camera floating during pause)
+    //  AAA PAUSE DETECTION SYSTEM (Prevents camera floating during pause)
     private bool _isPaused = false;
     private const float PAUSE_DETECTION_THRESHOLD = 0.01f; // Time.timeScale below this = paused
     
@@ -447,7 +390,7 @@ public class AAACameraController : MonoBehaviour
         movementController = GetComponentInParent<AAAMovementController>();
         playerTransform = transform.parent;
         
-        // 🔥 CRITICAL FIX: Store base local position for consistent offset application
+        //  CRITICAL FIX: Store base local position for consistent offset application
         baseLocalPosition = transform.localPosition;
         Debug.Log($"[AAACameraController] Base local position stored: {baseLocalPosition}");
         
@@ -490,10 +433,10 @@ public class AAACameraController : MonoBehaviour
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible = false;
         
-        // 🎯 UNIFIED IMPACT SYSTEM: Subscribe to impact events
+        //  UNIFIED IMPACT SYSTEM: Subscribe to impact events
         // This makes the camera listen to FallingDamageSystem instead of tracking falls independently
         ImpactEventBroadcaster.OnImpact += OnImpactReceived;
-        Debug.Log("[AAACameraController] ✅ Subscribed to unified impact events");
+        Debug.Log("[AAACameraController] âœ… Subscribed to unified impact events");
     }
     
     void OnEnable()
@@ -502,10 +445,10 @@ public class AAACameraController : MonoBehaviour
         if (playerCamera == null) playerCamera = GetComponent<Camera>();
         if (playerTransform == null) playerTransform = transform.parent;
         
-        // 🔥 CRITICAL FIX: Store base local position when enabled
+        //  CRITICAL FIX: Store base local position when enabled
         baseLocalPosition = transform.localPosition;
         
-        // 🔥 CRITICAL FIX: Restore FOV when re-enabled (prevents FOV reset when chest opens/closes)
+        //  CRITICAL FIX: Restore FOV when re-enabled (prevents FOV reset when chest opens/closes)
         if (playerCamera != null && storedFOVBeforeDisable > 0)
         {
             // Restore the FOV that was active when we were disabled
@@ -528,11 +471,11 @@ public class AAACameraController : MonoBehaviour
     
     void OnDisable()
     {
-        // 🔥 CRITICAL FIX: Store current FOV when disabled so we can restore it
+        //  CRITICAL FIX: Store current FOV when disabled so we can restore it
         storedFOVBeforeDisable = currentFOV;
         Debug.Log($"[AAACameraController] OnDisable: Stored FOV {storedFOVBeforeDisable} for restoration");
         
-        // 🛡️ PHASE 1: Safety cleanup - ensure Time.timeScale is reset
+        //  PHASE 1: Safety cleanup - ensure Time.timeScale is reset
         if (enableEmergencyRecovery && timeDilationManager != null)
         {
             Debug.LogWarning("[EMERGENCY] OnDisable: Forcing normal time");
@@ -555,7 +498,7 @@ public class AAACameraController : MonoBehaviour
     
     void Update()
     {
-        // 🛡️ AAA PAUSE DETECTION: Early exit if game is paused (prevents camera floating)
+        //  AAA PAUSE DETECTION: Early exit if game is paused (prevents camera floating)
         _isPaused = Time.timeScale < PAUSE_DETECTION_THRESHOLD;
         if (_isPaused)
         {
@@ -563,24 +506,23 @@ public class AAACameraController : MonoBehaviour
             return;
         }
         
-        // 🛡️ PHASE 1: Emergency recovery FIRST (safety checks before everything)
+        //  PHASE 1: Emergency recovery FIRST (safety checks before everything)
         UpdateEmergencyRecovery();
         
-        // 🔥 SMART FOV: Only update when transitioning, not every frame
+        //  SMART FOV: Only update when transitioning, not every frame
         UpdateFOVTransition();
         UpdateMotionPrediction();
-        UpdateHeadBob();
         
-        // 🎬 TIME DILATION: Update slow-mo effect
+        //  TIME DILATION: Update slow-mo effect
         UpdateTimeDilation();
         
-        // 🎪 AERIAL FREESTYLE TRICK SYSTEM
+        //  AERIAL FREESTYLE TRICK SYSTEM
         UpdateAerialFreestyleSystem();
     }
     
     void LateUpdate()
     {
-        // 🛡️ AAA PAUSE DETECTION: Early exit if game is paused (prevents camera floating)
+        //  AAA PAUSE DETECTION: Early exit if game is paused (prevents camera floating)
         // This is CRITICAL - without this check, camera effects continue running during pause
         if (_isPaused)
         {
@@ -589,20 +531,13 @@ public class AAACameraController : MonoBehaviour
         }
         
         // CRITICAL: Mouse look in LateUpdate for frame-perfect timing (AAA standard)
-        // BUT: Skip normal look input if freestyle mode is active OR reconciling
-        if (!isFreestyleModeActive && !isReconciling)
+        // Handle normal mouse look (ALWAYS for yaw rotation)
+        HandleLookInput();
+        
+        // During tricks, ALSO handle freestyle input (for pitch/backflips)
+        if (isFreestyleModeActive)
         {
-            HandleLookInput();
-        }
-        else
-        {
-            // 🎪 FREESTYLE MODE OR RECONCILIATION: Handle trick rotation
-            if (isFreestyleModeActive)
-            {
-                HandleFreestyleLookInput(); // Special input handling during tricks
-            }
-            
-            // DON'T apply rotation here - let ApplyCameraTransform() handle it (prevents double application)
+            HandleFreestyleLookInput(); // Adds pitch rotation during tricks
         }
         
         // Camera effects in LateUpdate for smoothness after all movement
@@ -624,36 +559,18 @@ public class AAACameraController : MonoBehaviour
     
     private void HandleLookInput()
     {
-        // 🎪 CRITICAL FIX: Don't accumulate yaw during freestyle mode!
-        // Freestyle mode uses its own rotation system (freestyleRotation)
-        // Accumulating yaw here causes massive drift when landing (-215° bug)
-        if (isFreestyleModeActive || isReconciling || isInLandingGrace)
-        {
-            // Sync currentLook with freestyle rotation to prevent drift
-            // Extract yaw from freestyleRotation to keep them aligned
-            Vector3 freestyleEuler = freestyleRotation.eulerAngles;
-            targetLook.x = freestyleEuler.y;
-            currentLook.x = freestyleEuler.y;
-            
-            // Still track pitch changes for when we exit freestyle
-            // (but don't apply them during freestyle)
-            rawLookInput.y = Input.GetAxis("Mouse Y");
-            float pitchInput = rawLookInput.y * mouseSensitivity;
-            if (invertY) pitchInput = -pitchInput;
-            
-            targetLook.y -= pitchInput;
-            targetLook.y = Mathf.Clamp(targetLook.y, -verticalLookLimit, verticalLookLimit);
-            currentLook.y = targetLook.y;
-            
-            return; // Don't process normal look input during freestyle
-        }
-        
         // Get raw mouse input (Unity Input Manager now at 1.0 sensitivity)
         rawLookInput.x = Input.GetAxis("Mouse X");
         rawLookInput.y = Input.GetAxis("Mouse Y");
         
         // Apply base sensitivity
         lookInput = rawLookInput * mouseSensitivity;
+        
+        // Reduce horizontal sensitivity during tricks for better control
+        if (isFreestyleModeActive)
+        {
+            lookInput.x *= trickYawSensitivity;
+        }
         
         // Apply sensitivity curve (now enhances instead of crushing)
         float curveMultiplier = sensitivityCurve.Evaluate(Mathf.Clamp01(rawLookInput.magnitude));
@@ -685,6 +602,7 @@ public class AAACameraController : MonoBehaviour
         
         // Apply rotation to player and camera without snapping to world axes.
         // Yaw: rotate around the current up vector by delta from the captured baseline.
+        // ALWAYS ACTIVE: Normal mouse look handles yaw even during tricks
         if (playerTransform != null)
         {
             if (referenceUp == Vector3.zero) referenceUp = playerTransform.up;
@@ -818,7 +736,7 @@ public class AAACameraController : MonoBehaviour
     }
     
     /// <summary>
-    /// 🎯 UNIFIED IMPACT SYSTEM - Handle impact events from FallingDamageSystem
+    /// UNIFIED IMPACT SYSTEM - Handle impact events from FallingDamageSystem
     /// 
     /// This method is called automatically when the player lands.
     /// It receives comprehensive impact data from the unified system and applies
@@ -872,7 +790,7 @@ public class AAACameraController : MonoBehaviour
         
         // Debug log for tuning (disable in production)
         // Shows: severity tier, fall distance, compression amount, trauma intensity
-        Debug.Log($"[CAMERA IMPACT] 🎯 {impact.severity} | " +
+        Debug.Log($"[CAMERA IMPACT] ðŸŽ¯ {impact.severity} | " +
                   $"Fall: {impact.fallDistance:F0}u | " +
                   $"Compression: {compressionAmount:F1} | " +
                   $"Trauma: {impact.traumaIntensity:F2} | " +
@@ -910,142 +828,6 @@ public class AAACameraController : MonoBehaviour
         {
             // Smoothly fade out when moving
             idleSwayOffset = Vector3.Lerp(idleSwayOffset, Vector3.zero, 10f * Time.deltaTime);
-        }
-    }
-    
-    /// <summary>
-    /// Call of Duty style headbob - realistic, subtle, weighted
-    /// Features:
-    /// - Velocity-based intensity scaling
-    /// - Sharp footstep impacts (not floaty sine waves)
-    /// - Subtle forward lean for momentum feel
-    /// - Minimal horizontal sway (grounded, not drunk)
-    /// - Step-based tilt for weight distribution
-    /// - Disabled during slides (slide has its own camera feel)
-    /// </summary>
-    private void UpdateHeadBob()
-    {
-        if (!enableHeadBob || movementController == null)
-        {
-            headBobOffset = Vector3.Lerp(headBobOffset, Vector3.zero, headBobSmoothness * Time.deltaTime);
-            stepTiltAngle = Mathf.SmoothDamp(stepTiltAngle, 0f, ref stepTiltVelocity, 0.15f);
-            currentBobIntensity = Mathf.Lerp(currentBobIntensity, 0f, headBobSmoothness * Time.deltaTime);
-            return;
-        }
-        
-        // Check if player is grounded and moving
-        bool isGrounded = movementController.IsGrounded;
-        bool isSliding = movementController.IsSliding; // Don't bob during slides!
-        Vector3 velocity = movementController.GetVelocity();
-        float horizontalSpeed = new Vector2(velocity.x, velocity.z).magnitude;
-        bool isMoving = horizontalSpeed > 50f; // Unity units
-        
-        // CRITICAL: Disable headbob during slides (slide has its own camera feel)
-        if (isSliding)
-        {
-            headBobOffset = Vector3.Lerp(headBobOffset, Vector3.zero, headBobSmoothness * 2f * Time.deltaTime);
-            stepTiltAngle = Mathf.SmoothDamp(stepTiltAngle, 0f, ref stepTiltVelocity, 0.1f);
-            currentBobIntensity = Mathf.Lerp(currentBobIntensity, 0f, headBobSmoothness * 2f * Time.deltaTime);
-            headBobTimer = 0f;
-            lastStepPhase = 0f;
-            return;
-        }
-        
-        // Check if sprinting
-        bool isSprinting = Input.GetKey(Controls.Boost) && 
-                          (energySystem == null || energySystem.CanSprint) &&
-                          horizontalSpeed > 400f;
-        
-        if (isGrounded && isMoving)
-        {
-            // === FREQUENCY CALCULATION (COD-style) ===
-            // Smoothly transition between walk and sprint frequencies
-            float targetFrequency = isSprinting ? sprintBobFrequency : walkBobFrequency;
-            currentBobFrequency = Mathf.Lerp(currentBobFrequency, targetFrequency, 8f * Time.deltaTime);
-            
-            // === INTENSITY SCALING (Velocity-based) ===
-            // Scale bob intensity based on actual movement speed (feels more responsive)
-            float speedRatio = Mathf.Clamp01(horizontalSpeed / (isSprinting ? 800f : 500f));
-            float targetIntensity = Mathf.Lerp(0.3f, 1f, speedRatio); // Never fully zero when moving
-            currentBobIntensity = Mathf.Lerp(currentBobIntensity, targetIntensity, headBobSmoothness * Time.deltaTime);
-            
-            // Velocity influence: faster movement = more bob
-            float velocityMultiplier = 1f + (velocityInfluence * speedRatio);
-            
-            // === TIMER INCREMENT ===
-            headBobTimer += Time.deltaTime * currentBobFrequency;
-            
-            // === FOOTSTEP PHASE CALCULATION ===
-            // Use a sharper curve for realistic footstep impacts (not floaty sine)
-            float stepPhase = headBobTimer % 1f; // 0 to 1 per step
-            
-            // Detect footstep impact (phase wraps around)
-            if (stepPhase < lastStepPhase)
-            {
-                // Footstep just occurred - apply subtle tilt
-                if (enableStepTilt)
-                {
-                    // Alternate tilt direction per step (left foot, right foot)
-                    float tiltDirection = (Mathf.FloorToInt(headBobTimer) % 2 == 0) ? 1f : -1f;
-                    stepTiltAngle = maxStepTiltAngle * tiltDirection * currentBobIntensity;
-                }
-            }
-            lastStepPhase = stepPhase;
-            
-            // === VERTICAL BOB (Smooth compression/extension cycle) ===
-            // Smoother approach: blend pure sine with power curve for adjustable feel
-            // Pure sine (footstepSharpness = 1.0) = perfectly smooth
-            // Higher values = more pronounced steps (but still smooth)
-            float baseSineWave = Mathf.Sin(stepPhase * Mathf.PI);
-            float sharpenedWave = Mathf.Pow(baseSineWave, footstepSharpness);
-            float verticalCurve = Mathf.Lerp(baseSineWave, sharpenedWave, 0.5f); // Blend for best feel
-            float verticalBob = -verticalCurve * headBobVerticalIntensity * velocityMultiplier * currentBobIntensity;
-            
-            // === HORIZONTAL SWAY (Minimal, realistic weight shift) ===
-            // Very subtle side-to-side, synchronized with steps
-            // Using smoothed sine for fluid motion
-            float horizontalCurve = Mathf.Sin(stepPhase * Mathf.PI * 2f); // Full sine for smooth sway
-            float horizontalBob = horizontalCurve * headBobHorizontalIntensity * velocityMultiplier * currentBobIntensity;
-            
-            // === FORWARD LEAN (Momentum feel) ===
-            // Subtle forward push during movement for weight/momentum
-            // More pronounced during sprint
-            float forwardLean = headBobForwardIntensity * velocityMultiplier * currentBobIntensity;
-            if (isSprinting)
-            {
-                forwardLean *= 1.5f; // Extra lean during sprint
-            }
-            
-            // === COMBINE ALL COMPONENTS ===
-            Vector3 targetBob = new Vector3(
-                horizontalBob,
-                verticalBob,
-                forwardLean
-            );
-            
-            // Smooth interpolation for natural feel
-            headBobOffset = Vector3.Lerp(headBobOffset, targetBob, headBobSmoothness * Time.deltaTime);
-            
-            // === STEP TILT (Weight distribution) ===
-            if (enableStepTilt)
-            {
-                // Smooth damp for natural spring-like return
-                stepTiltAngle = Mathf.SmoothDamp(stepTiltAngle, 0f, ref stepTiltVelocity, 0.12f);
-            }
-        }
-        else
-        {
-            // === IDLE STATE (Smooth return to center) ===
-            headBobOffset = Vector3.Lerp(headBobOffset, Vector3.zero, headBobSmoothness * Time.deltaTime);
-            stepTiltAngle = Mathf.SmoothDamp(stepTiltAngle, 0f, ref stepTiltVelocity, 0.15f);
-            currentBobIntensity = Mathf.Lerp(currentBobIntensity, 0f, headBobSmoothness * Time.deltaTime);
-            
-            // Reset timer when not moving
-            if (!isMoving)
-            {
-                headBobTimer = 0f;
-                lastStepPhase = 0f;
-            }
         }
     }
     
@@ -1168,7 +950,7 @@ public class AAACameraController : MonoBehaviour
                 dynamicWallTiltTarget = -wallSide * dynamicTiltMaxAngle;
 
                 if (showDynamicTiltDebug)
-                    Debug.Log($"[CAMERA] Wall screen pos: {horizontalPos:F2}, side: {wallSide}, tilt: {dynamicWallTiltTarget:F1}°");
+                    Debug.Log($"[CAMERA] Wall screen pos: {horizontalPos:F2}, side: {wallSide}, tilt: {dynamicWallTiltTarget:F1}Â°");
             }
             else
             {
@@ -1187,47 +969,33 @@ public class AAACameraController : MonoBehaviour
     /// <summary>
     /// PUBLIC API: Call this when player performs a wall jump
     /// wallNormal: The normal vector of the wall (pointing away from wall)
-    /// 🤝 BFFL FIX: Now aware of trick state - instantly cancels reconciliation for seamless combo flow!
+    ///  BFFL FIX: Now aware of trick state - instantly cancels reconciliation for seamless combo flow!
     /// </summary>
     public void TriggerWallJumpTilt(Vector3 wallNormal)
     {
         if (!enableWallJumpTilt) return;
         
-        // 🤝 BFFL: Instantly reconcile camera to UPRIGHT when wall jumping from trick
-        // This is CRITICAL - wall jump should feel like landing (camera resets to normal)
-        bool wasInTrickMode = isReconciling || isInLandingGrace || isFreestyleModeActive;
+        //  SIMPLIFIED: No reconciliation to cancel - just clean up trick mode!
+        bool wasInTrickMode = isFreestyleModeActive;
         
         if (wasInTrickMode)
         {
-            // FORCE IMMEDIATE RECONCILIATION TO UPRIGHT (like landing)
-            // Extract current yaw to preserve look direction
-            Vector3 freestyleEuler = freestyleRotation.eulerAngles;
-            float normalizedYaw = NormalizeAngle(freestyleEuler.y);
-            
-            // Snap camera to UPRIGHT orientation (pitch=0, roll=0, preserve yaw)
-            // This is the same target as landing reconciliation
-            Quaternion uprightTarget = Quaternion.Euler(0f, normalizedYaw, 0f);
-            
-            // INSTANT snap - no blending, wall jump demands immediate response
-            freestyleRotation = uprightTarget;
-            
-            // Clear ALL trick states
-            isReconciling = false;
-            isInLandingGrace = false;
+            // Simply exit trick mode - camera is already upright (player body rotated during tricks)
             isFreestyleModeActive = false;
             
-            // Reset momentum physics (but PRESERVE keyboard roll momentum for smooth feel)
+            // Reset momentum physics
             angularVelocity = Vector2.zero;
-            rollVelocity = 0f;
-            // keyboardRollVelocity is NOT reset - let it naturally decay
             smoothedInput = Vector2.zero;
             inputVelocity = Vector2.zero;
             isFlickBurstActive = false;
             
-            Debug.Log($"🤝 [TRICK→WALLJUMP] INSTANT RECONCILIATION! Camera snapped to upright (yaw: {normalizedYaw:F1}°)");
+            // Reset camera pitch/roll to neutral (yaw is on player body now)
+            freestyleRotation = Quaternion.identity;
+            
+            Debug.Log($"ðŸ¤ [TRICKâ†’WALLJUMP] Trick mode ended, camera reset to neutral");
         }
         
-        // 🔥 COMBO SYSTEM INTEGRATION: Register wall jump in combo tracker
+        //  COMBO SYSTEM INTEGRATION: Register wall jump in combo tracker
         if (ComboMultiplierSystem.Instance != null)
         {
             bool isAirborne = movementController != null && !movementController.IsGrounded;
@@ -1236,7 +1004,7 @@ public class AAACameraController : MonoBehaviour
             // Extra feedback for seamless transitions
             if (wasInTrickMode)
             {
-                Debug.Log("🤝✨ [COMBO] SEAMLESS Trick→WallJump transition detected!");
+                Debug.Log(" [COMBO] SEAMLESS Trickâ†’WallJump transition detected!");
             }
         }
         
@@ -1255,11 +1023,11 @@ public class AAACameraController : MonoBehaviour
         // Start the tilt timer
         wallJumpTiltStartTime = Time.time;
         
-        Debug.Log($"🎥 [WALL JUMP TILT] Triggered! Tilt: {wallJumpTiltTarget:F1}°, Wall Normal: {wallNormal}, Dot: {dotRight:F2}");
+        Debug.Log($"ðŸŽ¥ [WALL JUMP TILT] Triggered! Tilt: {wallJumpTiltTarget:F1}Â°, Wall Normal: {wallNormal}, Dot: {dotRight:F2}");
     }
     
     /// <summary>
-    /// 🔥 SMART FOV SYSTEM: Only transitions when needed, not every frame
+    ///  SMART FOV SYSTEM: Only transitions when needed, not every frame
     /// </summary>
     private void UpdateFOVTransition()
     {
@@ -1273,7 +1041,7 @@ public class AAACameraController : MonoBehaviour
     }
     
     /// <summary>
-    /// 🔥 PUBLIC METHOD: Call this when sprint STARTS
+    ///  PUBLIC METHOD: Call this when sprint STARTS
     /// </summary>
     public void SetSprintFOV()
     {
@@ -1282,7 +1050,7 @@ public class AAACameraController : MonoBehaviour
     }
     
     /// <summary>
-    /// 🔥 PUBLIC METHOD: Call this when sprint STOPS
+    ///  PUBLIC METHOD: Call this when sprint STOPS
     /// </summary>
     public void SetNormalFOV()
     {
@@ -1302,7 +1070,7 @@ public class AAACameraController : MonoBehaviour
     
     void OnDestroy()
     {
-        // 🎯 UNIFIED IMPACT SYSTEM: Unsubscribe from impact events
+        //  UNIFIED IMPACT SYSTEM: Unsubscribe from impact events
         // CRITICAL: Prevents memory leaks and null reference errors
         ImpactEventBroadcaster.OnImpact -= OnImpactReceived;
         
@@ -1412,17 +1180,18 @@ public class AAACameraController : MonoBehaviour
         // === AAA CAMERA ROTATION SYSTEM ===
         // Combines multiple tilt sources for cinematic feel
         
-        // 🎪 FREESTYLE MODE: Camera rotation is COMPLETELY INDEPENDENT
-        if (isFreestyleModeActive || isReconciling)
+        //  FREESTYLE MODE: Camera rotation is pitch/roll only (yaw on player body!)
+        if (isFreestyleModeActive)
         {
-            // During tricks or landing reconciliation, use freestyle rotation
+            // During tricks, freestyleRotation only contains pitch/roll
+            // Yaw comes from player body rotation
             transform.localRotation = freestyleRotation;
         }
         else
         {
             // Normal camera behavior
-            // Combine all tilt sources (strafe + wall jump + dynamic wall-relative + step tilt)
-            float totalRollTilt = currentTilt + wallJumpTiltAmount + dynamicWallTilt + stepTiltAngle;
+            // Combine all tilt sources (strafe + wall jump + dynamic wall-relative)
+            float totalRollTilt = currentTilt + wallJumpTiltAmount + dynamicWallTilt;
             
             // Combine all pitch sources (landing + wall jump)
             float totalPitch = currentLook.y + landingTiltOffset + wallJumpPitchAmount;
@@ -1467,23 +1236,26 @@ public class AAACameraController : MonoBehaviour
             totalOffset += idleSwayOffset;
         }
         
-        if (enableHeadBob)
-        {
-            totalOffset += headBobOffset;
-        }
-        
         // Apply motion prediction for ultra-smooth movement
         if (enableMotionPrediction && predictedVelocity.sqrMagnitude > 0.01f)
         {
             totalOffset += predictedVelocity * Time.deltaTime * 0.1f; // Subtle prediction
         }
         
-        // 🔥 CRITICAL FIX: Always apply offset relative to BASE position, not current position
+        //  CRITICAL FIX: Always apply offset relative to BASE position, not current position
         // This prevents drift/accumulation - camera height stays EXACTLY at base + offset
         transform.localPosition = baseLocalPosition + totalOffset;
     }
     
     // Public methods for camera shake system
+    
+    /// <summary>
+    /// Updates the base local position for the camera (used by crouch system)
+    /// </summary>
+    public void UpdateBaseLocalPosition(Vector3 newBasePosition)
+    {
+        baseLocalPosition = newBasePosition;
+    }
     
     /// <summary>
     /// Start beam shake effect for primary hand (continuous until stopped)
@@ -1777,11 +1549,12 @@ public class AAACameraController : MonoBehaviour
     }
     
     // ========================================
-    // 🛡️ STATE MACHINE & EMERGENCY RECOVERY (PHASE 1)
+    // ðŸ›¡ï¸ STATE MACHINE & EMERGENCY RECOVERY (PHASE 1)
     // ========================================
     
     /// <summary>
-    /// PHASE 1: Validate state transition - prevents invalid state changes
+    /// SIMPLIFIED: Validate state transition - prevents invalid state changes
+    /// ðŸŽ¯ Reconciling and TransitionCleanup states removed!
     /// </summary>
     private bool CanTransitionTo(TrickSystemState newState)
     {
@@ -1801,17 +1574,11 @@ public class AAACameraController : MonoBehaviour
                 
             case TrickSystemState.FreestyleActive:
                 return newState == TrickSystemState.LandingApproach || 
-                       newState == TrickSystemState.Reconciling ||
+                       newState == TrickSystemState.Grounded || // Direct to grounded on landing
                        newState == TrickSystemState.Airborne; // Allow cancel
                 
             case TrickSystemState.LandingApproach:
-                return newState == TrickSystemState.Reconciling;
-                
-            case TrickSystemState.Reconciling:
-                return newState == TrickSystemState.TransitionCleanup;
-                
-            case TrickSystemState.TransitionCleanup:
-                return newState == TrickSystemState.Grounded;
+                return newState == TrickSystemState.Grounded; // Direct to grounded (no reconciliation!)
                 
             default:
                 return false;
@@ -1828,7 +1595,7 @@ public class AAACameraController : MonoBehaviour
         {
             if (showEmergencyDebug)
             {
-                Debug.LogWarning($"[TRICK STATE] Invalid transition: {_trickState} → {newState}");
+                Debug.LogWarning($"[TRICK STATE] Invalid transition: {_trickState} â†’ {newState}");
             }
             return;
         }
@@ -1846,12 +1613,13 @@ public class AAACameraController : MonoBehaviour
         
         if (showEmergencyDebug)
         {
-            Debug.Log($"[TRICK STATE] {_previousTrickState} → {_trickState}");
+            Debug.Log($"[TRICK STATE] {_previousTrickState} â†’ {_trickState}");
         }
     }
     
     /// <summary>
-    /// PHASE 1: State enter callback - setup for new state
+    /// SIMPLIFIED: State enter callback - setup for new state
+    /// ðŸŽ¯ Reconciliation states removed!
     /// </summary>
     private void OnTrickStateEnter(TrickSystemState state)
     {
@@ -1860,7 +1628,7 @@ public class AAACameraController : MonoBehaviour
             case TrickSystemState.Grounded:
                 // Ensure all systems are reset
                 isFreestyleModeActive = false;
-                isReconciling = false;
+                // isReconciling removed - no longer needed
                 break;
                 
             case TrickSystemState.FreestyleActive:
@@ -1868,49 +1636,12 @@ public class AAACameraController : MonoBehaviour
                 isFreestyleModeActive = true;
                 break;
                 
-            case TrickSystemState.Reconciling:
-                // 🔧 DISABLED: State machine reconciliation (using manual system instead)
-                // The manual UpdateLandingReconciliation() handles everything now
-                // DO NOT set isReconciling = true here - it's already set by LandDuringFreestyle()
-                
-                // Just do XP award, nothing else
-                // 🎪 AERIAL TRICK XP SYSTEM - Award XP when entering reconciliation (landing!)
-                if (AerialTrickXPSystem.Instance != null)
-                {
-                    // Calculate airtime
-                    float airtime = Time.time - airborneStartTime;
-                    
-                    // Get rotations
-                    Vector3 rotations = new Vector3(totalRotationX, totalRotationY, totalRotationZ);
-                    
-                    // Check if landing is clean
-                    Vector3 currentEuler = freestyleRotation.eulerAngles;
-                    float pitchFromUpright = Mathf.Abs(Mathf.DeltaAngle(currentEuler.x, 0f));
-                    float rollFromUpright = Mathf.Abs(Mathf.DeltaAngle(currentEuler.z, 0f));
-                    float totalDeviation = pitchFromUpright + rollFromUpright;
-                    bool isCleanLanding = totalDeviation < cleanLandingThreshold;
-                    
-                    // Get landing position
-                    Vector3 landingPosition = transform.position;
-                    
-                    // Award XP!
-                    AerialTrickXPSystem.Instance.OnTrickLanded(airtime, rotations, landingPosition, isCleanLanding);
-                }
-                
-                // 🔧 CRITICAL: Do NOT set any reconciliation flags here!
-                // LandDuringFreestyle() already handles everything
-                break;
-                
-            case TrickSystemState.TransitionCleanup:
-                // Final cleanup before grounded
-                isReconciling = false;
-                isFreestyleModeActive = false;
-                break;
+            // ðŸŽ¯ Reconciling and TransitionCleanup cases REMOVED - no longer needed!
         }
     }
     
     /// <summary>
-    /// PHASE 1: State exit callback - cleanup for old state
+    /// SIMPLIFIED: State exit callback - cleanup for old state
     /// </summary>
     private void OnTrickStateExit(TrickSystemState state)
     {
@@ -1920,7 +1651,7 @@ public class AAACameraController : MonoBehaviour
                 // Exiting freestyle - log stats
                 if (showEmergencyDebug)
                 {
-                    Debug.Log($"[TRICK STATE] Freestyle ended - X:{totalRotationX:F0}° Y:{totalRotationY:F0}° Z:{totalRotationZ:F0}°");
+                    Debug.Log($"[TRICK STATE] Freestyle ended - X:{totalRotationX:F0}Â° Y:{totalRotationY:F0}Â° Z:{totalRotationZ:F0}Â°");
                 }
                 break;
         }
@@ -1941,7 +1672,7 @@ public class AAACameraController : MonoBehaviour
         }
         
         // PERFORMANCE: Skip expensive checks if grounded and idle (most common state)
-        if (_trickState == TrickSystemState.Grounded && !isFreestyleModeActive && !isReconciling)
+        if (_trickState == TrickSystemState.Grounded && !isFreestyleModeActive)
         {
             return; // Nothing to check - system is stable
         }
@@ -1958,8 +1689,8 @@ public class AAACameraController : MonoBehaviour
             }
         }
         
-        // 2. CHECK FOR TIME.TIMESCALE STUCK (only when NOT in trick/reconcile mode)
-        if (!isFreestyleModeActive && !isReconciling && timeDilationManager != null && timeDilationManager.IsTimeDilationActive())
+        // 2. CHECK FOR TIME.TIMESCALE STUCK (only when NOT in trick mode)
+        if (!isFreestyleModeActive && timeDilationManager != null && timeDilationManager.IsTimeDilationActive())
         {
             Debug.LogWarning($"[EMERGENCY] Time.timeScale stuck at {timeDilationManager.GetCurrentTimeScale()}! Resetting to 1.0");
             timeDilationManager.ForceNormalTime();
@@ -1987,21 +1718,7 @@ public class AAACameraController : MonoBehaviour
             _lastQuaternionNormalizeTime = Time.time;
         }
         
-        // 4. CHECK FOR INFINITE RECONCILIATION (only when reconciling)
-        if (isReconciling && (Time.time - reconciliationStartTime) > 5f)
-        {
-            Debug.LogWarning("[EMERGENCY] Reconciliation stuck! Force completing.");
-            isReconciling = false;
-            // 🎯 PRESERVE YAW even in emergency
-            float targetYaw = currentLook.x;
-            freestyleRotation = Quaternion.Euler(currentLook.y, targetYaw, 0f);
-            
-            if (_trickState == TrickSystemState.Reconciling)
-            {
-                TransitionTrickState(TrickSystemState.TransitionCleanup);
-                TransitionTrickState(TrickSystemState.Grounded);
-            }
-        }
+        // ðŸŽ¯ CHECK 4 REMOVED: No infinite reconciliation possible - system simplified!
     }
     
     /// <summary>
@@ -2022,11 +1739,9 @@ public class AAACameraController : MonoBehaviour
         freestyleRotation = Quaternion.Euler(currentLook.y, 0f, 0f);
         transform.localRotation = freestyleRotation;
         
-        // Reset all trick systems (including new state variables)
+        // Reset all trick systems
         isFreestyleModeActive = false;
-        isReconciling = false;
-        isInLandingGrace = false;
-        reconciliationProgress = 0f;
+        // ðŸŽ¯ RECONCILIATION REMOVED: No longer tracking these variables!
         
         // Force normal time via manager
         if (timeDilationManager != null)
@@ -2042,8 +1757,6 @@ public class AAACameraController : MonoBehaviour
         
         // 🎪 RESET MOMENTUM PHYSICS SYSTEM
         angularVelocity = Vector2.zero;
-        rollVelocity = 0f;
-        keyboardRollVelocity = 0f; // Reset keyboard roll momentum
         smoothedInput = Vector2.zero;
         inputVelocity = Vector2.zero;
         isFlickBurstActive = false;
@@ -2071,7 +1784,7 @@ public class AAACameraController : MonoBehaviour
         
         // Additional cleanup
         wasAirborneLastFrame = false;
-        wasReconciling = false;
+        // wasReconciling removed - no longer needed
         airborneStartTime = 0f;
         
         Debug.LogError($"[EMERGENCY] Full reset complete! State: {_trickState}");
@@ -2090,16 +1803,13 @@ public class AAACameraController : MonoBehaviour
         _previousTrickState = TrickSystemState.Grounded;
         _stateEnterTime = Time.time;
         
-        // Reset all trick mode flags (including new state variables)
+        // Reset all trick mode flags
         isFreestyleModeActive = false;
-        isReconciling = false;
-        isInLandingGrace = false;
-        reconciliationProgress = 0f;
-        wasReconciling = false;
+        // ðŸŽ¯ RECONCILIATION REMOVED: No longer tracking reconciliation state!
         wasAirborneLastFrame = false; // CRITICAL: Prevent false airborne detection
         
         // Reset rotation states
-        // 🎯 PRESERVE YAW during revive
+        // ðŸŽ¯ PRESERVE YAW during revive
         float targetYaw = currentLook.x;
         freestyleRotation = Quaternion.Euler(currentLook.y, targetYaw, 0f);
         totalRotationX = 0f;
@@ -2110,8 +1820,6 @@ public class AAACameraController : MonoBehaviour
         
         // 🎪 RESET MOMENTUM PHYSICS SYSTEM
         angularVelocity = Vector2.zero;
-        rollVelocity = 0f;
-        keyboardRollVelocity = 0f; // Reset keyboard roll momentum
         smoothedInput = Vector2.zero;
         inputVelocity = Vector2.zero;
         isFlickBurstActive = false;
@@ -2131,11 +1839,11 @@ public class AAACameraController : MonoBehaviour
             wasTimeDilationRequested = false;
         }
         
-        Debug.Log("[AAACameraController] ✅ Trick system reset complete - ready for normal gameplay");
+        Debug.Log("[AAACameraController] âœ… Trick system reset complete - ready for normal gameplay");
     }
     
     // ========================================
-    // 🎪 AERIAL FREESTYLE TRICK SYSTEM
+    // ðŸŽª AERIAL FREESTYLE TRICK SYSTEM
     // THE MOST REVOLUTIONARY CAMERA MECHANIC EVER CREATED
     // ========================================
     
@@ -2155,7 +1863,7 @@ public class AAACameraController : MonoBehaviour
             airborneStartTime = Time.time;
         }
         
-        // 🎮 PRO JUMP MECHANICS FOR TRICK SYSTEM (hold = higher jump, tap = small jump)
+        // ðŸŽ® PRO JUMP MECHANICS FOR TRICK SYSTEM (hold = higher jump, tap = small jump)
         // Jump IMMEDIATELY on press, cut if released early (exactly like spacebar!)
         if (middleClickTrickJump)
         {
@@ -2171,17 +1879,17 @@ public class AAACameraController : MonoBehaviour
                     
                     // Immediately activate freestyle (don't wait for min air time)
                     EnterFreestyleMode();
-                    Debug.Log("🎮 [TRICK JUMP] Jump triggered on PRESS! Hold to go higher, release early for small jump.");
+                    Debug.Log("ðŸŽ® [TRICK JUMP] Jump triggered on PRESS! Hold to go higher, release early for small jump.");
                 }
                 // If already airborne, ONLY activate freestyle (no jump)
                 else if (!isFreestyleModeActive)
                 {
                     EnterFreestyleMode();
-                    Debug.Log("🎮 [TRICK JUMP] Already airborne - Freestyle activated (no jump)!");
+                    Debug.Log("ðŸŽ® [TRICK JUMP] Already airborne - Freestyle activated (no jump)!");
                 }
                 else
                 {
-                    Debug.Log("🎮 [TRICK JUMP] Already in freestyle mode - ignoring input");
+                    Debug.Log("ðŸŽ® [TRICK JUMP] Already in freestyle mode - ignoring input");
                 }
             }
             
@@ -2191,21 +1899,21 @@ public class AAACameraController : MonoBehaviour
                 float holdDuration = Time.time - scrollWheelButtonPressTime;
                 isHoldingScrollWheelButton = false;
                 
-                // 🎮 VARIABLE JUMP HEIGHT: If released early while still going up, cut the jump!
+                // ðŸŽ® VARIABLE JUMP HEIGHT: If released early while still going up, cut the jump!
                 // This is EXACTLY how spacebar works - release early = small jump
                 if (movementController != null && movementController.Velocity.y > 0f)
                 {
                     // Still going up - apply jump cut!
                     StartCoroutine(ApplyTrickJumpCut());
-                    Debug.Log($"🎮 [TRICK JUMP] Released early ({holdDuration:F2}s) while rising - Jump cut applied!");
+                    Debug.Log($"ðŸŽ® [TRICK JUMP] Released early ({holdDuration:F2}s) while rising - Jump cut applied!");
                 }
                 else
                 {
-                    Debug.Log($"🎮 [TRICK JUMP] Released after {holdDuration:F2}s (already falling or at peak)");
+                    Debug.Log($"ðŸŽ® [TRICK JUMP] Released after {holdDuration:F2}s (already falling or at peak)");
                 }
                 
-                // 🎬 SLOW-MO: Releasing button starts ramping out of slow-mo
-                Debug.Log("🎬 [TIME DILATION] Scroll button released - Ramping out of slow-mo");
+                // ðŸŽ¬ SLOW-MO: Releasing button starts ramping out of slow-mo
+                Debug.Log("ðŸŽ¬ [TIME DILATION] Scroll button released - Ramping out of slow-mo");
             }
         }
         
@@ -2226,24 +1934,7 @@ public class AAACameraController : MonoBehaviour
             LandDuringFreestyle();
         }
         
-        // CRITICAL: Update reconciliation if active (continues AFTER landing for smooth transition)
-        if (isReconciling)
-        {
-            UpdateLandingReconciliation();
-        }
-        // EDGE CASE: If we're grounded and reconciling just finished, ensure smooth handoff
-        else if (!isAirborne && !isFreestyleModeActive && wasReconciling)
-        {
-            // Just finished reconciling - ensure camera is synced with normal rotation
-            // 🎯 PRESERVE YAW - use currentLook.x (player's horizontal look direction)
-            float totalPitch = currentLook.y + landingTiltOffset + wallJumpPitchAmount;
-            float targetYaw = currentLook.x; // PRESERVE PLAYER'S HORIZONTAL LOOK DIRECTION
-            float totalRollTilt = currentTilt + wallJumpTiltAmount + dynamicWallTilt;
-            freestyleRotation = Quaternion.Euler(totalPitch, targetYaw, totalRollTilt);
-            wasReconciling = false;
-        }
-        
-        // 🎬 ULTRA COOL: Handle trick FOV boost - synced with time dilation
+        //  ULTRA COOL: Handle trick FOV boost - synced with time dilation
         if (isFreestyleModeActive)
         {
             // Boost FOV during tricks - synced with time dilation using unscaledDeltaTime
@@ -2266,25 +1957,24 @@ public class AAACameraController : MonoBehaviour
             // Don't set targetFOV here - let sprint system control it
         }
         
-        // Track state changes for edge case handling
-        wasReconciling = isReconciling;
+        // Track airborne state for edge case handling
         wasAirborneLastFrame = isAirborne;
     }
     
     /// <summary>
     /// Trigger a trick jump using the existing system
-    /// 🎪 Jump height control happens via ApplyTrickJumpCut() coroutine
+    ///  Jump height control happens via ApplyTrickJumpCut() coroutine
     /// </summary>
     private void TriggerTrickJump()
     {
         if (movementController != null)
         {
             movementController.TriggerTrickJumpFromExternalSystem();
-            Debug.Log("🎮 [TRICK JUMP] Trick jump triggered!");
+            Debug.Log("ðŸŽ® [TRICK JUMP] Trick jump triggered!");
         }
         else
         {
-            Debug.LogWarning("🎮 [TRICK JUMP] AAAMovementController not found! Cannot trigger jump.");
+            Debug.LogWarning("ðŸŽ® [TRICK JUMP] AAAMovementController not found! Cannot trigger jump.");
         }
     }
     
@@ -2312,11 +2002,11 @@ public class AAACameraController : MonoBehaviour
                 currentVelocity.y *= 0.5f;
                 velocityField.SetValue(movementController, currentVelocity);
                 
-                Debug.Log($"🎮 [TRICK JUMP] Jump cut applied! New Y velocity: {currentVelocity.y:F1}");
+                Debug.Log($"ðŸŽ® [TRICK JUMP] Jump cut applied! New Y velocity: {currentVelocity.y:F1}");
             }
             else
             {
-                Debug.LogWarning("🎮 [TRICK JUMP] Could not access velocity field for jump cut!");
+                Debug.LogWarning("ðŸŽ® [TRICK JUMP] Could not access velocity field for jump cut!");
             }
         }
     }
@@ -2324,7 +2014,7 @@ public class AAACameraController : MonoBehaviour
     /// <summary>
     /// Enter freestyle mode - camera becomes independent from body
     /// SKATE-STYLE: Instant burst on activation for flick-it feel
-    /// 🤝 BFFL: Clears reconciliation states for clean trick restart
+    ///  BFFL: Clears reconciliation states for clean trick restart
     /// </summary>
     private void EnterFreestyleMode()
     {
@@ -2335,12 +2025,9 @@ public class AAACameraController : MonoBehaviour
         freestyleModeStartTime = Time.time;
         isInInitialBurst = true;
         
-        // 🤝 BFFL: Clear reconciliation states when entering freestyle
-        // This ensures clean transitions from wall jump → new trick
-        isReconciling = false;
-        isInLandingGrace = false;
+        //  RECONCILIATION REMOVED: No cleanup needed - player body rotates with yaw!
         
-        // 🔥 COMBO SYSTEM INTEGRATION: Register trick start
+        //  COMBO SYSTEM INTEGRATION: Register trick start
         if (ComboMultiplierSystem.Instance != null)
         {
             bool isAirborne = movementController != null && !movementController.IsGrounded;
@@ -2350,7 +2037,7 @@ public class AAACameraController : MonoBehaviour
             // Extra feedback for seamless transitions
             if (isTransitioningFromWallJump)
             {
-                Debug.Log("🤝✨ [COMBO] SEAMLESS WallJump→Trick transition detected!");
+                Debug.Log(" [COMBO] SEAMLESS WallJumpâ†’Trick transition detected!");
             }
         }
         
@@ -2368,14 +2055,12 @@ public class AAACameraController : MonoBehaviour
         
         // 🎪 RESET MOMENTUM PHYSICS SYSTEM
         angularVelocity = Vector2.zero;
-        rollVelocity = 0f;
-        keyboardRollVelocity = 0f; // Reset keyboard roll momentum
         smoothedInput = Vector2.zero;
         inputVelocity = Vector2.zero;
         isFlickBurstActive = false;
         lastFlickDirection = Vector2.zero;
         
-        // 🔥 PLAY EPIC TRICK START SOUND (bass thump slide down with slow-motion!)
+        //  PLAY EPIC TRICK START SOUND (bass thump slide down with slow-motion!)
         GeminiGauntlet.Audio.GameSounds.PlayTrickStartSound(transform.position, 1.0f);
         
         Debug.Log($"🎪 [FREESTYLE] TRICK MODE ACTIVATED! Initial burst: {initialFlipBurstMultiplier}x speed!");
@@ -2391,26 +2076,31 @@ public class AAACameraController : MonoBehaviour
         // Smoothly blend back to normal camera orientation
         // We'll let the normal camera system take over gradually
         
-        Debug.Log($"🎪 [FREESTYLE] Exited - Rotations: X={totalRotationX:F0}° Y={totalRotationY:F0}° Z={totalRotationZ:F0}°");
+        Debug.Log($" [FREESTYLE] Exited - Rotations: X={totalRotationX:F0}Â° Y={totalRotationY:F0}Â° Z={totalRotationZ:F0}Â°");
     }
     
     /// <summary>
-    /// Handle landing while in freestyle mode - THE DRAMATIC MOMENT
-    /// SEQUENTIAL PHASES: Grace period → Reconciliation → Normal control
+    /// Handle landing while in freestyle mode - SIMPLIFIED (No reconciliation needed!)
+    /// Player body already faces correct direction from yaw rotation during tricks
+    /// Camera just needs to return pitch/roll to neutral
     /// </summary>
     private void LandDuringFreestyle()
     {
         isFreestyleModeActive = false;
-        isReconciling = true;
-        isInLandingGrace = true; // Start grace period
-        landingTime = Time.time;
-        reconciliationStartTime = Time.time; // Will be updated after grace period
-        reconciliationStartRotation = freestyleRotation;
-        reconciliationProgress = 0f;
         
-        // 🎪 FREEZE MOMENTUM ON LANDING (stop the spin)
+        // ï¿½ CRITICAL FIX: Recapture baseline rotation so mouse look continues from new player orientation!
+        // Without this, HandleLookInput() will snap player back to pre-trick rotation
+        if (playerTransform != null)
+        {
+            baseYawRotation = playerTransform.rotation;
+            yawStart = currentLook.x; // Reset yaw tracking to current mouse position
+            referenceUp = playerTransform.up;
+            
+            Debug.Log($" [LANDING FIX] Recaptured baseline - Player now facing: {playerTransform.eulerAngles.y:F1}Â° yaw");
+        }
+        
+        //  FREEZE MOMENTUM ON LANDING (stop the spin)
         angularVelocity = Vector2.zero;
-        rollVelocity = 0f;
         smoothedInput = Vector2.zero;
         inputVelocity = Vector2.zero;
         isFlickBurstActive = false;
@@ -2418,40 +2108,49 @@ public class AAACameraController : MonoBehaviour
         // Reset button hold state on landing
         isHoldingScrollWheelButton = false;
         
-        // 🎯 CORRECT DEVIATION CALCULATION
-        // Calculate the ACTUAL angle between current freestyle rotation and UPRIGHT target
-        // Target = UPRIGHT orientation (player standing, looking forward/wherever they're facing)
+        //  CALCULATE LANDING QUALITY
+        // Only check if upside down - no roll since we only do pitch
         Vector3 freestyleEuler = freestyleRotation.eulerAngles;
-        float normalizedYaw = NormalizeAngle(freestyleEuler.y);
         
-        // Target is UPRIGHT - pitch=0 (head up), yaw=preserved (direction), roll=0 (no tilt)
-        // If you land upside down (pitch=180°), deviation will be ~180° = FAIL
-        Quaternion targetRotation = Quaternion.Euler(0f, normalizedYaw, 0f);
+        // Check if upside down (pitch > 90° means inverted)
+        float pitch = NormalizeAngle(freestyleEuler.x);
+        bool isUpsideDown = Mathf.Abs(pitch) > 90f;
         
-        // This is the REAL deviation - the actual angle we'll reconcile through
-        float totalDeviation = Quaternion.Angle(freestyleRotation, targetRotation);
-        
-        bool isCleanLanding = totalDeviation < cleanLandingThreshold;
+        // Clean landing = not upside down (no roll to check since we don't roll)
+        bool isCleanLanding = !isUpsideDown;
         
         if (isCleanLanding)
         {
-            // CLEAN LANDING - Smooth transition
-            Debug.Log($"✨ [FREESTYLE] CLEAN LANDING! Deviation: {totalDeviation:F1}° - Smooth recovery");
+            // CLEAN LANDING - No reconciliation needed!
+            Debug.Log($"✨ [FREESTYLE] CLEAN LANDING! Pitch: {pitch:F1}° - No camera adjustment needed");
             AddTrauma(0.1f); // Tiny trauma for impact feel
+            
+            // Sync currentLook.y to match freestyle pitch so HandleLookInput continues from here
+            float finalPitch = freestyleEuler.x;
+            if (finalPitch > 180f) finalPitch -= 360f; // Normalize to -180 to 180
+            
+            currentLook.y = finalPitch;
+            targetLook.y = finalPitch;
+            
+            // Zero out roll for normal mode (should already be 0, but just in case)
+            freestyleRotation = Quaternion.Euler(finalPitch, 0f, 0f);
         }
         else
         {
             // FAILED LANDING - Camera crashes to reality!
-            Debug.Log($"💥 [FREESTYLE] CRASH LANDING! Deviation: {totalDeviation:F1}° - Reality check!");
+            Debug.Log($"💥 [FREESTYLE] CRASH LANDING! Upside down: {isUpsideDown} - Reconciling camera!");
             
             // Scale trauma based on how inverted we were
-            float traumaAmount = Mathf.Lerp(failedLandingTrauma * 0.5f, failedLandingTrauma, totalDeviation / 180f);
+            float traumaAmount = isUpsideDown ? failedLandingTrauma : failedLandingTrauma * 0.5f;
             AddTrauma(traumaAmount);
+            
+            //  ONLY RECONCILE ON BAD LANDINGS (upside down)
+            StartCoroutine(SmoothCameraReturnToNeutral(freestyleRotation, 0.3f));
         }
         
-        Debug.Log($"🎪 [FREESTYLE] LANDED - Total flips: X={totalRotationX/360f:F1} Y={totalRotationY/360f:F1} Z={totalRotationZ/360f:F1} - Grace period: {landingGracePeriod:F2}s");
+        Debug.Log($"🎪 [FREESTYLE] LANDED - Total flips: X={totalRotationX/360f:F1} Y={totalRotationY/360f:F1} Z={totalRotationZ/360f:F1}");
         
-        // 🎪 AERIAL TRICK XP SYSTEM - Reward the player for sick tricks!
+        //  AERIAL TRICK XP SYSTEM - Reward the player for sick tricks!
         if (AerialTrickXPSystem.Instance != null)
         {
             // Calculate airtime
@@ -2469,125 +2168,35 @@ public class AAACameraController : MonoBehaviour
     }
     
     /// <summary>
-    /// Update the landing reconciliation - INDUSTRY STANDARD TIME-NORMALIZED BLEND
-    /// BULLETPROOF IMPLEMENTATION:
-    /// - Fixed duration (frame-rate independent)
-    /// - Player can interrupt (player-first)
-    /// - Animation curve easing (cinematic)
-    /// - Grace period (reaction time)
-    /// - Sequential phases (cognitive load reduction)
-    /// 🤝 BFFL: Wall jump can instantly cancel reconciliation for seamless combo flow!
+    /// Smoothly return camera to neutral orientation after landing
+    /// ONLY resets roll - pitch is controlled by normal mouse look (currentLook.y)
     /// </summary>
-    private void UpdateLandingReconciliation()
+    private System.Collections.IEnumerator SmoothCameraReturnToNeutral(Quaternion startRotation, float duration)
     {
-        // 🤝 BFFL CHECK: Wall jump might have cancelled us - early exit if so
-        if (!isReconciling && !isInLandingGrace)
-        {
-            return; // Wall jump rescued us! Let it take over.
-        }
+        float elapsed = 0f;
         
-        // CRITICAL: Only reconcile if we're grounded (not while approaching!)
-        bool isGrounded = movementController != null && movementController.IsGrounded;
+        // Extract current pitch from normal mouse look system
+        float targetPitch = currentLook.y;
         
-        if (!isGrounded)
-        {
-            // Still airborne - maintain freestyle rotation, don't reset yet!
-            return;
-        }
+        // Target is current pitch (from mouse look) + 0 roll
+        Quaternion targetRotation = Quaternion.Euler(targetPitch, 0f, 0f);
         
-        // === PHASE 1: LANDING GRACE PERIOD ===
-        // Give player a moment to register landing before camera starts moving
-        if (isInLandingGrace)
+        while (elapsed < duration)
         {
-            float graceDuration = Time.time - landingTime;
+            elapsed += Time.deltaTime;
+            float t = reconciliationCurve.Evaluate(elapsed / duration);
             
-            if (graceDuration < landingGracePeriod)
-            {
-                // Still in grace period - freeze camera, let player register landing
-                return;
-            }
-            else
-            {
-                // Grace period over - start reconciliation
-                isInLandingGrace = false;
-                reconciliationStartTime = Time.time;
-                reconciliationProgress = 0f;
-                
-                // Capture starting and target rotations
-                reconciliationStartRotation = freestyleRotation;
-                
-                // Calculate target rotation (normal camera orientation)
-                // 🎯 CRITICAL FIX: Target is CLEAN body-relative orientation
-                // Extract pitch/yaw from current freestyle rotation, ZERO out roll
-                // This prevents accumulated wall jump tilts from polluting the reconciliation
-                Vector3 freestyleEuler = freestyleRotation.eulerAngles;
-                float normalizedPitch = NormalizeAngle(freestyleEuler.x);
-                float normalizedYaw = NormalizeAngle(freestyleEuler.y);
-                
-                reconciliationTargetRotation = Quaternion.Euler(normalizedPitch, normalizedYaw, 0f);
-                
-                Debug.Log($"🎯 [RECONCILIATION] Starting - Duration: {landingReconciliationDuration:F2}s, Angle: {Quaternion.Angle(reconciliationStartRotation, reconciliationTargetRotation):F1}°, Target Yaw: {normalizedYaw:F1}°");
-            }
-        }
-        
-        // === PHASE 2: CHECK FOR PLAYER INTERRUPT ===
-        // Player can cancel reconciliation by moving mouse (player-first philosophy)
-        if (allowPlayerCancelReconciliation)
-        {
-            Vector2 rawInput = new Vector2(
-                Input.GetAxis("Mouse X"),
-                Input.GetAxis("Mouse Y")
-            );
+            freestyleRotation = Quaternion.Slerp(startRotation, targetRotation, t);
             
-            // Check if input exceeds deadzone (prevents sensor noise from canceling)
-            if (rawInput.magnitude > mouseInputDeadzone)
-            {
-                // Player is trying to look - CANCEL reconciliation, return control
-                isReconciling = false;
-                isInLandingGrace = false;
-                
-                // Sync freestyle rotation to current normal rotation for smooth handoff
-                // 🎯 CRITICAL: Preserve current view direction, zero roll
-                Vector3 currentEuler = freestyleRotation.eulerAngles;
-                float normalizedPitch = NormalizeAngle(currentEuler.x);
-                float normalizedYaw = NormalizeAngle(currentEuler.y);
-                
-                freestyleRotation = Quaternion.Euler(normalizedPitch, normalizedYaw, 0f);
-                
-                Debug.Log("✋ [RECONCILIATION] Cancelled by player input - control restored");
-                return;
-            }
+            yield return null;
         }
         
-        // === PHASE 3: TIME-NORMALIZED RECONCILIATION ===
-        // Progress from 0 to 1 over fixed duration (frame-rate independent)
-        reconciliationProgress += Time.deltaTime / landingReconciliationDuration;
-        reconciliationProgress = Mathf.Clamp01(reconciliationProgress);
-        
-        // Apply animation curve for cinematic easing
-        float curvedProgress = reconciliationCurve.Evaluate(reconciliationProgress);
-        
-        // Blend using time-normalized progress (NOT frame-rate dependent)
-        freestyleRotation = Quaternion.Slerp(
-            reconciliationStartRotation,
-            reconciliationTargetRotation,
-            curvedProgress
-        );
-        
-        // === PHASE 4: COMPLETION CHECK ===
-        if (reconciliationProgress >= 1.0f)
-        {
-            // Reconciliation complete - snap to final rotation and exit
-            freestyleRotation = reconciliationTargetRotation;
-            isReconciling = false;
-            
-            float totalDuration = Time.time - (landingTime + landingGracePeriod);
-            Debug.Log($"✅ [RECONCILIATION] Complete - Total time: {totalDuration:F2}s (grace: {landingGracePeriod:F2}s + blend: {landingReconciliationDuration:F2}s)");
-        }
+        freestyleRotation = targetRotation;
+        Debug.Log($" [CAMERA RETURN] Camera returned to neutral - Pitch: {targetPitch:F1}° (from mouse), Roll: 0°");
     }
     
     /// <summary>
-    /// Handle mouse input during freestyle mode - 🎪 MOMENTUM PHYSICS SYSTEM (THE GEM)
+    /// Handle mouse input during freestyle mode - ðŸŽª MOMENTUM PHYSICS SYSTEM (THE GEM)
     /// Skate game feel: Flick and let it spin, with realistic physics
     /// Features:
     /// - Velocity-based rotation (not direct control)
@@ -2603,8 +2212,8 @@ public class AAACameraController : MonoBehaviour
         
         // Get raw mouse input
         Vector2 rawInput = new Vector2(
-            Input.GetAxis("Mouse X"),
-            Input.GetAxis("Mouse Y")
+            0f, // IGNORE X - yaw handled by normal mouse look!
+            Input.GetAxis("Mouse Y") // ONLY process Y for pitch (backflips/frontflips)
         );
         
         // TIME DILATION COMPENSATION: Scale input to maintain consistent feel
@@ -2618,7 +2227,7 @@ public class AAACameraController : MonoBehaviour
             trickInput.y = -trickInput.y;
         
         // ========================================
-        // 🎪 MOMENTUM PHYSICS SYSTEM
+        //  MOMENTUM PHYSICS SYSTEM
         // ========================================
         
         if (enableMomentumPhysics)
@@ -2642,7 +2251,7 @@ public class AAACameraController : MonoBehaviour
                 isFlickBurstActive = true;
                 flickBurstStartTime = Time.time;
                 lastFlickDirection = smoothedInput.normalized;
-                Debug.Log($"🎪 [FLICK] Burst activated! Magnitude: {inputMagnitude:F2}");
+                Debug.Log($" [FLICK] Burst activated! Magnitude: {inputMagnitude:F2}");
             }
             
             // Calculate flick multiplier (burst phase)
@@ -2695,114 +2304,25 @@ public class AAACameraController : MonoBehaviour
             
             // === CALCULATE ROTATION DELTAS FROM VELOCITY ===
             float pitchDelta = -angularVelocity.y * Time.unscaledDeltaTime;
-            float yawDelta = angularVelocity.x * Time.unscaledDeltaTime;
-            
-            // === 🌪️ DIAGONAL ROLL (VARIAL FLIP SYSTEM) ===
-            float rollDelta = 0f;
-            if (enableDiagonalRoll && hasSignificantInput)
-            {
-                // Calculate diagonal strength (both X and Y input = diagonal)
-                float diagonalStrength = Mathf.Abs(smoothedInput.x * smoothedInput.y);
-                
-                // Roll direction based on diagonal quadrant
-                float rollDirection = Mathf.Sign(smoothedInput.x * smoothedInput.y);
-                
-                // Calculate roll velocity from diagonal input
-                float rollAccel = diagonalStrength * angularAcceleration * rollStrength * rollDirection;
-                rollVelocity += rollAccel * Time.unscaledDeltaTime;
-                
-                // Apply drag to roll velocity
-                rollVelocity -= rollVelocity * angularDrag * Time.unscaledDeltaTime;
-                
-                // Clamp roll velocity
-                rollVelocity = Mathf.Clamp(rollVelocity, -maxAngularVelocity * 0.5f, maxAngularVelocity * 0.5f);
-                
-                // Calculate roll delta
-                rollDelta = rollVelocity * Time.unscaledDeltaTime;
-                
-                // Track for stats
-                totalRotationZ += rollDelta;
-            }
-            else
-            {
-                // No diagonal input - decay roll velocity
-                rollVelocity -= rollVelocity * angularDrag * 2f * Time.unscaledDeltaTime;
-                rollDelta = rollVelocity * Time.unscaledDeltaTime;
-            }
-            
-            // === 🎮 KEYBOARD ROLL CONTROLS (Q/E for corrections - SMOOTH MOMENTUM) ===
-            if (enableKeyboardRoll)
-            {
-                float keyboardRollInput = 0f;
-                if (Input.GetKey(rollLeftKey))
-                {
-                    keyboardRollInput = -1f; // Q = Roll left (negative)
-                }
-                else if (Input.GetKey(rollRightKey))
-                {
-                    keyboardRollInput = 1f; // E = Roll right (positive)
-                }
-                
-                if (Mathf.Abs(keyboardRollInput) > 0.01f)
-                {
-                    // Smooth acceleration curve - starts slow, builds momentum
-                    // Acceleration is calculated to reach max speed over keyboardRollAccelTime
-                    float acceleration = keyboardRollMaxSpeed / keyboardRollAccelTime;
-                    float targetDirection = Mathf.Sign(keyboardRollInput);
-                    
-                    // Accelerate toward target direction
-                    keyboardRollVelocity += targetDirection * acceleration * Time.unscaledDeltaTime;
-                    
-                    // Clamp to max velocity
-                    keyboardRollVelocity = Mathf.Clamp(keyboardRollVelocity, -keyboardRollMaxSpeed, keyboardRollMaxSpeed);
-                }
-                else
-                {
-                    // Natural momentum fade-out when released (preserves spin but gradually decays)
-                    // Exponential decay - feels organic and never abruptly stops
-                    float decayAmount = Mathf.Abs(keyboardRollVelocity) * keyboardRollDecayRate;
-                    keyboardRollVelocity -= Mathf.Sign(keyboardRollVelocity) * decayAmount * Time.unscaledDeltaTime * 60f;
-                    
-                    // Only snap to zero when EXTREMELY slow (imperceptible)
-                    if (Mathf.Abs(keyboardRollVelocity) < 0.1f)
-                    {
-                        keyboardRollVelocity = 0f;
-                    }
-                }
-                
-                // Apply velocity to rotation (smooth momentum)
-                if (Mathf.Abs(keyboardRollVelocity) > 0.1f)
-                {
-                    float keyboardRollDelta = keyboardRollVelocity * Time.unscaledDeltaTime;
-                    rollDelta += keyboardRollDelta; // Add to existing roll from diagonal input
-                    totalRotationZ += keyboardRollDelta;
-                    
-                    if (Mathf.Abs(keyboardRollInput) > 0.01f) // Only log when actively pressing
-                    {
-                        Debug.Log($"🎮 [KEYBOARD ROLL] {(keyboardRollInput < 0 ? "LEFT (Q)" : "RIGHT (E)")} - Velocity: {keyboardRollVelocity:F1}°/s");
-                    }
-                }
-            }
+            // Yaw handled by normal mouse look system - trick system only does PITCH!
             
             // === TRACK TOTAL ROTATIONS FOR STATS ===
             totalRotationX += pitchDelta;
-            totalRotationY += yawDelta;
+            // totalRotationY already tracked when rotating player body
             
-            // === APPLY ROTATIONS IN LOCAL SPACE (3-AXIS CONTROL) ===
+            // === APPLY ROTATIONS TO CAMERA ===
             Quaternion pitchRotation = Quaternion.AngleAxis(pitchDelta, Vector3.right);
-            Quaternion yawRotation = Quaternion.AngleAxis(yawDelta, Vector3.up);
-            Quaternion rollRotation = Quaternion.AngleAxis(rollDelta, Vector3.forward);
             
-            // Combine all three axes
-            freestyleRotation = freestyleRotation * pitchRotation * yawRotation * rollRotation;
+            // Camera only gets pitch - yaw is 100% on player body, NO ROLL
+            freestyleRotation = freestyleRotation * pitchRotation;
             
             // === TRACK ROTATION SPEED (for motion blur) ===
-            lastRotationSpeed = (Mathf.Abs(pitchDelta) + Mathf.Abs(yawDelta) + Mathf.Abs(rollDelta)) / Time.unscaledDeltaTime;
+            lastRotationSpeed = Mathf.Abs(pitchDelta) / Time.unscaledDeltaTime;
             
             // Debug visualization
             if (inputMagnitude > 0.1f || angularVelocity.magnitude > 10f)
             {
-                Debug.Log($"🎪 [MOMENTUM] Input: {inputMagnitude:F2} | Velocity: {angularVelocity.magnitude:F1}°/s | Roll: {rollVelocity:F1}°/s | Speed: {lastRotationSpeed:F1}°/s");
+                Debug.Log($"🎪 [MOMENTUM] Input: {inputMagnitude:F2} | Velocity: {angularVelocity.magnitude:F1}°/s | Speed: {lastRotationSpeed:F1}°/s");
             }
         }
         else
@@ -2818,21 +2338,18 @@ public class AAACameraController : MonoBehaviour
             );
             
             float pitchDelta = -freestyleLookInput.y;
-            float yawDelta = freestyleLookInput.x;
+            // Yaw handled by normal mouse look - trick system only does PITCH!
             
             float maxDelta = maxTrickRotationSpeed * Time.unscaledDeltaTime;
             pitchDelta = Mathf.Clamp(pitchDelta, -maxDelta, maxDelta);
-            yawDelta = Mathf.Clamp(yawDelta, -maxDelta, maxDelta);
             
             totalRotationX += pitchDelta;
-            totalRotationY += yawDelta;
             
+            // Apply pitch to camera only (yaw handled by normal mouse look)
             Quaternion pitchRotation = Quaternion.AngleAxis(pitchDelta, Vector3.right);
-            Quaternion yawRotation = Quaternion.AngleAxis(yawDelta, Vector3.up);
+            freestyleRotation = freestyleRotation * pitchRotation;
             
-            freestyleRotation = freestyleRotation * pitchRotation * yawRotation;
-            
-            lastRotationSpeed = (Mathf.Abs(pitchDelta) + Mathf.Abs(yawDelta)) / Time.unscaledDeltaTime;
+            lastRotationSpeed = Mathf.Abs(pitchDelta) / Time.unscaledDeltaTime;
         }
         
         // CRITICAL: Normalize every frame to prevent quaternion drift
@@ -2877,7 +2394,7 @@ public class AAACameraController : MonoBehaviour
     public bool IsInInitialBurst => isInInitialBurst;
     
     // ========================================
-    // 🎬 TIME DILATION SYSTEM
+    //  TIME DILATION SYSTEM
     // ========================================
     
     /// <summary>
@@ -2907,7 +2424,7 @@ public class AAACameraController : MonoBehaviour
             {
                 GameObject managerObj = new GameObject("TimeDilationManager");
                 timeDilationManager = managerObj.AddComponent<TimeDilationManager>();
-                Debug.Log("🎬 [AAACameraController] Created TimeDilationManager automatically");
+                Debug.Log(" [AAACameraController] Created TimeDilationManager automatically");
             }
         }
         
@@ -2940,11 +2457,11 @@ public class AAACameraController : MonoBehaviour
             
             if (shouldBeDilated)
             {
-                Debug.Log($"🎬 [TIME DILATION] Trick slow-mo ACTIVATED ({trickTimeScale:F2}x speed)");
+                Debug.Log($"ðŸŽ¬ [TIME DILATION] Trick slow-mo ACTIVATED ({trickTimeScale:F2}x speed)");
             }
             else
             {
-                Debug.Log("🎬 [TIME DILATION] Trick slow-mo DEACTIVATED");
+                Debug.Log("ðŸŽ¬ [TIME DILATION] Trick slow-mo DEACTIVATED");
             }
         }
         // Update transition speed if approaching landing (dynamic speed change)

@@ -95,7 +95,7 @@ public class MovementConfig : ScriptableObject
     
     [Header("Detection & Timing")]
     [Tooltip("Wall detection distance (how far to scan for walls)")]
-    public float wallDetectionDistance = 250f; // BALANCED: 78% of body length, tight but forgiving detection
+    public float wallDetectionDistance = 400f; // INCREASED: 1.25× body length for more forgiving wall jump detection
     
     [Tooltip("Cooldown between wall jumps (0.12s = ultra-responsive)")]
     public float wallJumpCooldown = 0.12f;
@@ -151,6 +151,9 @@ public class MovementConfig : ScriptableObject
     [Tooltip("Maximum walkable slope angle")]
     public float maxSlopeAngle = 50f;
     
+    [Tooltip("Minimum slope angle to apply slope physics - CRITICAL: Must be low (1-2°) to catch gentle slopes!")]
+    public float minimumSlopeAngle = 1f; // FIXED: Was 8f - now catches ALL slopes for smooth walking
+    
     [Tooltip("Maximum step height for stairs")]
     public float maxStepHeight = 40f;
     
@@ -174,8 +177,11 @@ public class MovementConfig : ScriptableObject
     [Tooltip("Ground check distance - CRITICAL: Must be large enough to detect slopes ahead!")]
     public float groundCheckDistance = 20f; // FIXED: Was 0.7f - too small for 320-unit character on slopes!
     
-    [Tooltip("Grounded state hysteresis (smoothing)")]
-    public float groundedHysteresisSeconds = 0f;
+    [Tooltip("Grounded state hysteresis (smoothing) - CRITICAL: Must be low (0.02s) for smooth slope walking!")]
+    public float groundedHysteresisSeconds = 0.02f; // FIXED: Was 0.1f - now 20ms for instant slope stick response
+    
+    [Tooltip("Grounded debounce frames - CRITICAL: Must be 1 for instant slope response!")]
+    public int groundedDebounceFrames = 1; // FIXED: Was 2 - now instant confirmation
     
     [Tooltip("Jump ground suppression time")]
     public float jumpGroundSuppressSeconds = 0f;

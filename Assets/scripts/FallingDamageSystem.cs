@@ -59,15 +59,21 @@ public class FallingDamageSystem : MonoBehaviour
     [SerializeField] private float minAirTimeForFallDetection = 1.0f; // Minimum airtime to count as a fall (prevents spam on tiny bumps)
     [SerializeField] private float landingCooldown = 0.5f; // Cooldown between landing detections (prevents jitter spam)
     
-    [Header("Falling Wind Sound")]
-    [SerializeField] private float windSoundSpeedThreshold = 1500f; // Minimum speed (any direction) to trigger wind sound (faster than sprint)
-    [SerializeField] private float windSoundMinVolume = 0.3f; // Volume at threshold speed
-    [SerializeField] private float windSoundMaxVolume = 1.0f; // Volume at max speed
-    [SerializeField] private float windSoundMaxSpeed = 3000f; // Speed for maximum volume (terminal velocity)
-    [Tooltip("Hysteresis offset to prevent jittery on/off (stop threshold is lower)")]
-    [SerializeField] private float windSoundHysteresis = 100f; // Stop at 1400 if threshold is 1500
-    [Tooltip("Cooldown after jump/landing before wind sound can start (prevents glitchy triggering on jumps)")]
-    [SerializeField] private float windSoundJumpCooldown = 0.5f; // Half second cooldown after jump
+    [Header("=== VERTICAL FALLING WIND SOUND ===")]
+    [SerializeField] private float verticalWindThreshold = 1500f; // Minimum downward speed to trigger falling wind
+    [SerializeField] private float verticalWindMinVolume = 0.3f; // Volume at threshold speed
+    [SerializeField] private float verticalWindMaxVolume = 1.0f; // Volume at max speed
+    [SerializeField] private float verticalWindMaxSpeed = 3000f; // Speed for maximum volume (terminal velocity)
+    [SerializeField] private float verticalWindHysteresis = 200f; // Hysteresis for downward speed
+    [Tooltip("Cooldown after jump/landing before vertical wind sound can start")]
+    [SerializeField] private float verticalWindJumpCooldown = 0.5f; // Half second cooldown after jump
+    
+    [Header("=== HORIZONTAL RUSHING WIND SOUND ===")]
+    [SerializeField] private float horizontalWindThreshold = 3500f; // Minimum horizontal speed to trigger rushing wind
+    [SerializeField] private float horizontalWindMinVolume = 0.3f; // Volume at threshold speed
+    [SerializeField] private float horizontalWindMaxVolume = 1.0f; // Volume at max speed
+    [SerializeField] private float horizontalWindMaxSpeed = 18000f; // Max horizontal speed for volume scaling
+    [SerializeField] private float horizontalWindHysteresis = 700f; // Hysteresis for horizontal speed
     
     [Header("=== 🎯 UNIFIED IMPACT SYSTEM ===")]
     [Tooltip("Base camera compression amount for landing impacts (used for calculation)")]
@@ -85,10 +91,22 @@ public class FallingDamageSystem : MonoBehaviour
     private float highestPointDuringFall = 0f;
     private bool wasGroundedLastFrame = true;
     private float fallStartTime = 0f;
-    private bool isWindSoundPlaying = false;
-    private SoundHandle windSoundHandle = SoundHandle.Invalid;
+    
+    // Vertical wind sound tracking
+    private bool isVerticalWindPlaying = false;
+    private SoundHandle verticalWindHandle = SoundHandle.Invalid;
+    private float verticalWindStartTime = 0f;
+    private float verticalWindStopTime = 0f;
+    
+    // Horizontal wind sound tracking
+    private bool isHorizontalWindPlaying = false;
+    private SoundHandle horizontalWindHandle = SoundHandle.Invalid;
+    private float horizontalWindStartTime = 0f;
+    private float horizontalWindStopTime = 0f;
+    
     private float lastLandingProcessedTime = -999f; // Anti-spam cooldown
     private float lastJumpOrLandingTime = -999f; // Track last jump/landing for wind sound cooldown
+    private Vector3 lastFrameVelocity = Vector3.zero; // Track velocity for sudden stop detection
     
     // Collision damage tracking
     private float lastCollisionDamageTime = -999f;
@@ -98,11 +116,15 @@ public class FallingDamageSystem : MonoBehaviour
     private ElevatorController _currentElevator = null;
     private bool _isOnPlatform = false;
     
+    // CRITICAL FIX: Slide tracking to prevent false fall damage
+    private CleanAAACrouch _crouchController = null;
+    
     void Awake()
     {
         controller = GetComponent<CharacterController>();
         playerHealth = GetComponent<PlayerHealth>();
         movementController = GetComponent<AAAMovementController>();
+        _crouchController = GetComponent<CleanAAACrouch>();
         
         // Find camera controller for trauma effects
         Camera mainCam = Camera.main;
@@ -162,8 +184,12 @@ public class FallingDamageSystem : MonoBehaviour
         // Check if we're grounded using the movement controller if available
         bool isGrounded = movementController != null ? movementController.IsGrounded : controller.isGrounded;
         
+        // CRITICAL FIX: Skip fall detection if sliding!
+        // Sliding applies high downward velocity for ground adhesion - this is NOT falling damage!
+        bool isSliding = _crouchController != null && _crouchController.IsSliding;
+        
         // CRITICAL: Skip fall detection if on moving platform!
-        if (!_isOnPlatform)
+        if (!_isOnPlatform && !isSliding)
         {
             // Detect when we leave the ground (start falling)
             if (wasGroundedLastFrame && !isGrounded)
@@ -194,7 +220,7 @@ public class FallingDamageSystem : MonoBehaviour
                 highestPointDuringFall = 0f;
                 fallStartTime = 0f;
                 
-                Debug.Log("[FallingDamageSystem] ✅ On moving platform - fall tracking cancelled");
+                Debug.Log("[FallingDamageSystem] ✅ On moving platform/sliding - fall tracking cancelled");
             }
         }
         
@@ -203,10 +229,30 @@ public class FallingDamageSystem : MonoBehaviour
     
     /// <summary>
     /// Detect high-speed collisions with CharacterController
+    /// CRITICAL: Only for WALL collisions, not ground landings!
     /// </summary>
     void OnControllerColliderHit(ControllerColliderHit hit)
     {
         if (!enableCollisionDamage || playerHealth == null || movementController == null) return;
+        
+        // CRITICAL FIX: Don't apply collision damage during slides!
+        // Slides intentionally use high downward velocity for ground adhesion
+        bool isSliding = _crouchController != null && _crouchController.IsSliding;
+        if (isSliding) return;
+        
+        // CRITICAL FIX: Don't apply collision damage when grounded!
+        // Ground landings are handled by fall damage system, not collision damage
+        // This prevents double-damage and fixes high-velocity landing spam
+        bool isGrounded = movementController != null ? movementController.IsGroundedWithCoyote : controller.isGrounded;
+        if (isGrounded) return;
+        
+        // CRITICAL FIX: Only apply damage to VERTICAL surfaces (walls), not horizontal (ground/ceiling)
+        // Calculate surface angle from vertical (0° = perfectly vertical wall, 90° = perfectly horizontal ground)
+        float surfaceAngleFromVertical = Vector3.Angle(hit.normal, Vector3.up);
+        
+        // Only damage on walls (roughly vertical surfaces between 30-150 degrees from up vector)
+        // This excludes: ground (0-30°), ceiling (150-180°), and shallow slopes
+        if (surfaceAngleFromVertical < 30f || surfaceAngleFromVertical > 150f) return;
         
         // Check cooldown
         if (Time.time - lastCollisionDamageTime < collisionDamageCooldown) return;
@@ -239,9 +285,8 @@ public class FallingDamageSystem : MonoBehaviour
         fallStartHeight = transform.position.y;
         highestPointDuringFall = fallStartHeight;
         fallStartTime = Time.time;
-        isWindSoundPlaying = false;
         
-        // Record jump time to prevent wind sound from triggering immediately
+        // Record jump time to prevent vertical wind sound from triggering immediately
         lastJumpOrLandingTime = Time.time;
         
         // Debug log removed - only log actual falls (ones that last > minAirTimeForFallDetection)
@@ -260,6 +305,10 @@ public class FallingDamageSystem : MonoBehaviour
     private void EndFall()
     {
         if (!isFalling) return;
+        
+        // 🔇 CRITICAL FIX: Stop wind sounds IMMEDIATELY when landing detected
+        // This must happen BEFORE any other checks to prevent wind playing after landing
+        StopAllWindSounds();
         
         // Calculate how long player was in air
         float airTime = Time.time - fallStartTime;
@@ -325,62 +374,241 @@ public class FallingDamageSystem : MonoBehaviour
     }
     
     /// <summary>
-    /// 🌬️ SIMPLE WIND SOUND SYSTEM - Speed based with dynamic volume
-    /// Works with ANY movement - falling, flying, grappling, etc.
-    /// FIXED: Now respects jump/landing cooldown to prevent glitchy triggering
+    /// 🌬️ DUAL WIND SOUND SYSTEM - Separate sounds for vertical falling and horizontal rushing
+    /// VERTICAL: Falling wind for downward movement (terminal velocity feel)
+    /// HORIZONTAL: Rushing wind for high-speed horizontal movement (flying/grappling feel)
+    /// Both can play simultaneously for realistic sound when moving fast in multiple directions!
     /// </summary>
     private void UpdateWindSound()
     {
         if (movementController == null) return;
         
-        // Get TOTAL speed in any direction
-        float currentSpeed = movementController.Velocity.magnitude;
+        // 🔇 CRITICAL FIX: Check if we're ACTUALLY on ground (raw state, no debouncing delay)
+        // This prevents wind from playing during the debounced landing detection period
+        bool isRawGrounded = controller != null && controller.isGrounded;
+        if (isRawGrounded)
+        {
+            // We're physically on the ground - stop ALL wind sounds immediately
+            if (isVerticalWindPlaying || isHorizontalWindPlaying)
+            {
+                StopAllWindSounds();
+            }
+            return; // Early exit - no wind sounds while grounded
+        }
         
+        Vector3 velocity = movementController.Velocity;
+        
+        // Calculate downward speed (negative Y velocity)
+        float downwardSpeed = Mathf.Max(0f, -velocity.y);
+        
+        // Calculate horizontal speed (XZ plane)
+        Vector3 horizontalVelocity = new Vector3(velocity.x, 0f, velocity.z);
+        float horizontalSpeed = horizontalVelocity.magnitude;
+        
+        // SUDDEN STOP DETECTION - Check for abrupt deceleration (wall crash)
+        float currentTotalSpeed = velocity.magnitude;
+        float lastTotalSpeed = lastFrameVelocity.magnitude;
+        float speedChange = lastTotalSpeed - currentTotalSpeed;
+        const float CRASH_DECELERATION_THRESHOLD = 3000f;
+        bool suddenStop = speedChange > CRASH_DECELERATION_THRESHOLD;
+        
+        // Update last frame velocity for next frame
+        lastFrameVelocity = velocity;
+        
+        // Update both wind sound systems
+        UpdateVerticalWindSound(downwardSpeed, suddenStop);
+        UpdateHorizontalWindSound(horizontalSpeed, suddenStop);
+    }
+    
+    /// <summary>
+    /// Update VERTICAL falling wind sound (downward movement)
+    /// </summary>
+    private void UpdateVerticalWindSound(float downwardSpeed, bool suddenStop)
+    {
         // Check if we're in the cooldown period after a jump/landing
         float timeSinceJumpOrLanding = Time.time - lastJumpOrLandingTime;
-        bool inCooldown = timeSinceJumpOrLanding < windSoundJumpCooldown;
+        bool inCooldown = timeSinceJumpOrLanding < verticalWindJumpCooldown;
         
-        // Determine if wind should play based on speed with HYSTERESIS
+        // Anti-spam timing
+        float timeSinceStart = Time.time - verticalWindStartTime;
+        float timeSinceStopped = Time.time - verticalWindStopTime;
+        const float MIN_PLAY_DURATION = 0.3f;
+        const float MIN_STOP_DURATION = 0.2f;
+        
         bool shouldPlay = false;
-        if (isWindSoundPlaying)
+        
+        if (isVerticalWindPlaying)
         {
-            // Currently playing - use lower threshold to stop (prevents jitter)
-            shouldPlay = currentSpeed >= (windSoundSpeedThreshold - windSoundHysteresis);
+            // IMMEDIATE STOP on sudden deceleration
+            if (suddenStop)
+            {
+                StopVerticalWind();
+                Debug.Log($"[FallingDamageSystem] 🌬️ VERTICAL wind CRASHED");
+                return;
+            }
+            
+            // Use hysteresis threshold to stop
+            shouldPlay = downwardSpeed >= (verticalWindThreshold - verticalWindHysteresis);
+            
+            // Enforce minimum play duration
+            if (!shouldPlay && timeSinceStart < MIN_PLAY_DURATION)
+            {
+                shouldPlay = true;
+            }
         }
         else
         {
-            // Not playing - use normal threshold to start AND check cooldown
-            shouldPlay = currentSpeed >= windSoundSpeedThreshold && !inCooldown;
+            // Use normal threshold to start, check cooldown
+            shouldPlay = downwardSpeed >= verticalWindThreshold && !inCooldown;
+            
+            // Enforce minimum stop duration
+            if (shouldPlay && timeSinceStopped < MIN_STOP_DURATION)
+            {
+                shouldPlay = false;
+            }
         }
         
-        // Start wind sound if needed
-        if (shouldPlay && !isWindSoundPlaying)
+        // Start vertical wind
+        if (shouldPlay && !isVerticalWindPlaying)
         {
-            windSoundHandle = GameSounds.StartFallingWindLoop(transform, windSoundMinVolume);
-            isWindSoundPlaying = true;
-            Debug.Log($"[FallingDamageSystem] 🌬️ Wind sound STARTED at speed: {currentSpeed:F1} units/s");
+            verticalWindHandle = GameSounds.StartFallingWindLoop(transform, verticalWindMinVolume);
+            isVerticalWindPlaying = true;
+            verticalWindStartTime = Time.time;
+            Debug.Log($"[FallingDamageSystem] 🌬️ VERTICAL wind STARTED (D:{downwardSpeed:F0})");
         }
-        // Stop wind sound if needed
-        else if (!shouldPlay && isWindSoundPlaying)
+        // Stop vertical wind
+        else if (!shouldPlay && isVerticalWindPlaying)
         {
-            if (windSoundHandle.IsValid)
+            StopVerticalWind();
+            Debug.Log($"[FallingDamageSystem] 🌬️ VERTICAL wind STOPPED (D:{downwardSpeed:F0})");
+        }
+        // Update volume
+        else if (isVerticalWindPlaying && verticalWindHandle.IsValid)
+        {
+            float speedPercent = Mathf.InverseLerp(verticalWindThreshold, verticalWindMaxSpeed, downwardSpeed);
+            float targetVolume = Mathf.Lerp(verticalWindMinVolume, verticalWindMaxVolume, speedPercent);
+            verticalWindHandle.SetVolume(targetVolume);
+        }
+    }
+    
+    /// <summary>
+    /// Update HORIZONTAL rushing wind sound (XZ plane movement)
+    /// </summary>
+    private void UpdateHorizontalWindSound(float horizontalSpeed, bool suddenStop)
+    {
+        // No cooldown for horizontal wind - can start immediately
+        
+        // Anti-spam timing
+        float timeSinceStart = Time.time - horizontalWindStartTime;
+        float timeSinceStopped = Time.time - horizontalWindStopTime;
+        const float MIN_PLAY_DURATION = 0.3f;
+        const float MIN_STOP_DURATION = 0.2f;
+        
+        bool shouldPlay = false;
+        
+        if (isHorizontalWindPlaying)
+        {
+            // IMMEDIATE STOP on sudden deceleration
+            if (suddenStop)
             {
-                windSoundHandle.Stop();
+                StopHorizontalWind();
+                Debug.Log($"[FallingDamageSystem] 💨 HORIZONTAL wind CRASHED");
+                return;
             }
-            GameSounds.StopFallingWindLoop();
-            isWindSoundPlaying = false;
-            windSoundHandle = SoundHandle.Invalid;
-            Debug.Log($"[FallingDamageSystem] 🌬️ Wind sound STOPPED at speed: {currentSpeed:F1} units/s");
-        }
-        // Update volume based on speed if playing
-        else if (isWindSoundPlaying && windSoundHandle.IsValid)
-        {
-            // Calculate volume based on speed (louder = faster)
-            float speedPercent = Mathf.InverseLerp(windSoundSpeedThreshold, windSoundMaxSpeed, currentSpeed);
-            float targetVolume = Mathf.Lerp(windSoundMinVolume, windSoundMaxVolume, speedPercent);
             
-            // Set volume on the sound handle
-            windSoundHandle.SetVolume(targetVolume);
+            // Use hysteresis threshold to stop
+            shouldPlay = horizontalSpeed >= (horizontalWindThreshold - horizontalWindHysteresis);
+            
+            // Enforce minimum play duration
+            if (!shouldPlay && timeSinceStart < MIN_PLAY_DURATION)
+            {
+                shouldPlay = true;
+            }
+        }
+        else
+        {
+            // Use normal threshold to start
+            shouldPlay = horizontalSpeed >= horizontalWindThreshold;
+            
+            // Enforce minimum stop duration
+            if (shouldPlay && timeSinceStopped < MIN_STOP_DURATION)
+            {
+                shouldPlay = false;
+            }
+        }
+        
+        // Start horizontal wind
+        if (shouldPlay && !isHorizontalWindPlaying)
+        {
+            // TODO: Replace with dedicated horizontal rushing wind sound when available
+            horizontalWindHandle = GameSounds.StartFallingWindLoop(transform, horizontalWindMinVolume);
+            isHorizontalWindPlaying = true;
+            horizontalWindStartTime = Time.time;
+            Debug.Log($"[FallingDamageSystem] 💨 HORIZONTAL wind STARTED (H:{horizontalSpeed:F0})");
+        }
+        // Stop horizontal wind
+        else if (!shouldPlay && isHorizontalWindPlaying)
+        {
+            StopHorizontalWind();
+            Debug.Log($"[FallingDamageSystem] 💨 HORIZONTAL wind STOPPED (H:{horizontalSpeed:F0})");
+        }
+        // Update volume
+        else if (isHorizontalWindPlaying && horizontalWindHandle.IsValid)
+        {
+            float speedPercent = Mathf.InverseLerp(horizontalWindThreshold, horizontalWindMaxSpeed, horizontalSpeed);
+            float targetVolume = Mathf.Lerp(horizontalWindMinVolume, horizontalWindMaxVolume, speedPercent);
+            horizontalWindHandle.SetVolume(targetVolume);
+        }
+    }
+    
+    /// <summary>
+    /// Helper: Stop vertical wind sound
+    /// </summary>
+    private void StopVerticalWind()
+    {
+        if (verticalWindHandle.IsValid)
+        {
+            verticalWindHandle.Stop();
+        }
+        GameSounds.StopFallingWindLoop();
+        isVerticalWindPlaying = false;
+        verticalWindHandle = SoundHandle.Invalid;
+        verticalWindStopTime = Time.time;
+    }
+    
+    /// <summary>
+    /// Helper: Stop horizontal wind sound
+    /// </summary>
+    private void StopHorizontalWind()
+    {
+        if (horizontalWindHandle.IsValid)
+        {
+            horizontalWindHandle.Stop();
+        }
+        // TODO: Stop dedicated horizontal wind when available
+        GameSounds.StopFallingWindLoop();
+        isHorizontalWindPlaying = false;
+        horizontalWindHandle = SoundHandle.Invalid;
+        horizontalWindStopTime = Time.time;
+    }
+    
+    /// <summary>
+    /// Helper: Stop ALL wind sounds immediately (used on landing)
+    /// </summary>
+    private void StopAllWindSounds()
+    {
+        // Stop vertical wind
+        if (isVerticalWindPlaying)
+        {
+            StopVerticalWind();
+            Debug.Log("[FallingDamageSystem] 🔇 VERTICAL wind FORCE STOPPED (landing)");
+        }
+        
+        // Stop horizontal wind
+        if (isHorizontalWindPlaying)
+        {
+            StopHorizontalWind();
+            Debug.Log("[FallingDamageSystem] 🔇 HORIZONTAL wind FORCE STOPPED (landing)");
         }
     }
     

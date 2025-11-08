@@ -49,24 +49,37 @@ public class ArmorPlateSystem : MonoBehaviour
             Debug.LogError("[ArmorPlateSystem] PlayerHealth component not found!");
         }
         
-        // Find animation systems
-        animationStateManager = FindObjectOfType<PlayerAnimationStateManager>();
+        // Find animation systems - use GameManager caching for performance
+        if (GameManager.Instance != null)
+        {
+            animationStateManager = GameManager.Instance.GetPlayerAnimationStateManager();
+            if (animationStateManager == null)
+            {
+                // Fallback to LayeredHandAnimationController
+                layeredHandAnimationController = GameManager.Instance.GetLayeredHandAnimationController();
+            }
+        }
+        else
+        {
+            // FALLBACK: Only use expensive FindObjectOfType if GameManager is missing
+            animationStateManager = FindObjectOfType<PlayerAnimationStateManager>();
+            if (animationStateManager == null)
+            {
+                layeredHandAnimationController = FindObjectOfType<LayeredHandAnimationController>();
+            }
+        }
+        
         if (animationStateManager != null)
         {
             Debug.Log("[ArmorPlateSystem] ✅ Found PlayerAnimationStateManager - using centralized animation system");
         }
+        else if (layeredHandAnimationController != null)
+        {
+            Debug.Log("[ArmorPlateSystem] ✅ Found LayeredHandAnimationController - using fallback animation system");
+        }
         else
         {
-            // Fallback to LayeredHandAnimationController
-            layeredHandAnimationController = FindObjectOfType<LayeredHandAnimationController>();
-            if (layeredHandAnimationController != null)
-            {
-                Debug.Log("[ArmorPlateSystem] ✅ Found LayeredHandAnimationController - using fallback animation system");
-            }
-            else
-            {
-                Debug.LogError("[ArmorPlateSystem] ❌ No animation system found! Armor plate animations will not work!");
-            }
+            Debug.LogError("[ArmorPlateSystem] ❌ No animation system found! Armor plate animations will not work!");
         }
         
         // Initialize plate state

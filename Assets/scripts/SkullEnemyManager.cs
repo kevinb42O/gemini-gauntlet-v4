@@ -12,6 +12,14 @@ public class SkullEnemyManager : MonoBehaviour
     private static readonly Dictionary<SkullEnemy, SkullLOD> _lastLods = new Dictionary<SkullEnemy, SkullLOD>();
     private static int _cursor = 0;
 
+    [Header("🎯 GLOBAL SKULL CAP - Performance Optimization")]
+    [Tooltip("HARD LIMIT: Maximum number of skulls that can exist simultaneously across ALL towers")]
+    [Range(10, 100)]
+    public int maxGlobalSkulls = 30;
+    
+    [Tooltip("Show debug logs when skull spawning is blocked by global cap")]
+    public bool logGlobalCapBlocking = true;
+
     [Header("LOD Distances (meters)")]
     [Tooltip("<= Near distance => Near LOD")]
     public float nearDistance = 25f;
@@ -86,6 +94,47 @@ public class SkullEnemyManager : MonoBehaviour
             if (_cursor >= _skulls.Count) _cursor = 0;
         }
         _lastLods.Remove(skull);
+    }
+    
+    /// <summary>
+    /// 🎯 PRIORITY 1: Check if another skull can spawn without exceeding global cap
+    /// Returns true if spawning is allowed, false if global cap would be exceeded
+    /// </summary>
+    public static bool CanSpawnSkull()
+    {
+        EnsureInstance();
+        
+        // Clean up any null references in the list before counting
+        _skulls.RemoveAll(s => s == null);
+        
+        int currentCount = _skulls.Count;
+        bool canSpawn = currentCount < _instance.maxGlobalSkulls;
+        
+        if (!canSpawn && _instance.logGlobalCapBlocking)
+        {
+            Debug.LogWarning($"[SkullEnemyManager] 🚫 GLOBAL SKULL CAP REACHED! Current: {currentCount}/{_instance.maxGlobalSkulls} - Blocking spawn");
+        }
+        
+        return canSpawn;
+    }
+    
+    /// <summary>
+    /// Get current active skull count across all towers
+    /// </summary>
+    public static int GetActiveSkullCount()
+    {
+        EnsureInstance();
+        _skulls.RemoveAll(s => s == null);
+        return _skulls.Count;
+    }
+    
+    /// <summary>
+    /// Get maximum allowed skulls (global cap)
+    /// </summary>
+    public static int GetMaxGlobalSkulls()
+    {
+        EnsureInstance();
+        return _instance.maxGlobalSkulls;
     }
 
     private void Update()

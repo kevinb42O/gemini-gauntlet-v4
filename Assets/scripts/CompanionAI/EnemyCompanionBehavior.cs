@@ -1726,7 +1726,7 @@ namespace CompanionAI
                         successfulRays++;
                         if (showDebugInfo && i == 0)
                         {
-                            Debug.DrawRay(rayStart, rayDirection * hit.distance, Color.green, detectionInterval);
+                            // Debug.DrawRay removed for performance
                             Debug.Log($"[EnemyCompanionBehavior] ✅ RAYCAST HIT PLAYER at {hit.distance:F0} units - CLEAR LOS!");
                         }
                     }
@@ -1735,7 +1735,7 @@ namespace CompanionAI
                         // Hit something else (wall, obstacle) BEFORE reaching player - LOS blocked!
                         if (showDebugInfo && i == 0)
                         {
-                            Debug.DrawRay(rayStart, rayDirection * hit.distance, Color.red, detectionInterval);
+                            // Debug.DrawRay removed for performance
                             Debug.Log($"[EnemyCompanionBehavior] 🚫 RAYCAST BLOCKED by {hit.collider.name} (Layer: {LayerMask.LayerToName(hit.collider.gameObject.layer)}) at {hit.distance:F0} units - WALL DETECTED!");
                         }
                     }
@@ -1746,7 +1746,7 @@ namespace CompanionAI
                     // Treat as no LOS for safety
                     if (showDebugInfo && i == 0)
                     {
-                        Debug.DrawRay(rayStart, rayDirection * rayDistance, Color.yellow, detectionInterval);
+                        // Debug.DrawRay removed for performance
                         Debug.Log($"[EnemyCompanionBehavior] ⚠️ RAYCAST MISSED - No hit detected (player out of range?)");
                     }
                 }

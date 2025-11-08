@@ -1,6 +1,7 @@
 using UnityEngine;
 using GeminiGauntlet.Progression;
 using GeminiGauntlet.UI;
+using System;
 
 /// <summary>
 /// 🎯 WALL JUMP XP CHAIN SYSTEM - SIMPLE VERSION
@@ -9,6 +10,11 @@ using GeminiGauntlet.UI;
 public class WallJumpXPSimple : MonoBehaviour
 {
     public static WallJumpXPSimple Instance { get; private set; }
+    
+    /// <summary>
+    /// Event fired when a wall jump is performed (for light effects and other systems)
+    /// </summary>
+    public static event Action<Vector3> OnWallJumpPerformed_Event;
     
     [Header("=== XP CHAIN SETTINGS ===")]
     [SerializeField] private int baseWallJumpXP = 5;
@@ -80,6 +86,9 @@ public class WallJumpXPSimple : MonoBehaviour
     /// </summary>
     public void OnWallJumpPerformed(Vector3 wallJumpPosition)
     {
+        // Broadcast wall jump event for other systems (like dynamic lighting)
+        OnWallJumpPerformed_Event?.Invoke(wallJumpPosition);
+        
         float timeSinceLastJump = Time.time - lastWallJumpTime;
         
         // Check if chain continues or resets

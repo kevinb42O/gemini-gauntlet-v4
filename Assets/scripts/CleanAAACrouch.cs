@@ -26,6 +26,7 @@ public class CleanAAACrouch : MonoBehaviour
     [SerializeField] private LayeredHandAnimationController layeredHandAnimationController;
     private PlayerAnimationStateManager animationStateManager; // Centralized animation system
     private PlayerEnergySystem energySystem; // For sprint state detection
+    private CrouchSlamController slamController; // For slam state detection to prevent input conflicts
 
     [Header("=== ⚙️ INPUT KEYS ===")]
     // PHASE 3 COHERENCE FIX: All input keys use Controls class exclusively
@@ -55,7 +56,7 @@ public class CleanAAACrouch : MonoBehaviour
     [SerializeField] private float slideFrictionFlat = 2f; // LEGACY: Use config.slideFrictionFlat instead
     [SerializeField] private float slideSteerAcceleration = 1200f; // LEGACY: Use config.slideSteerAcceleration instead
     [SerializeField] private float slideMaxSpeed = 3000f; // FIXED: Was 5040 - now 2× sprint (fast but not rocket-mode)
-    [SerializeField] private float uphillFrictionMultiplier = 4f; // LEGACY: Use config.uphillFrictionMultiplier instead
+    [SerializeField] private float uphillFrictionMultiplier = 2.0f; // REBALANCED: Was 4f - reduced to 2× for smoother uphill transitions
     [SerializeField] private float stickToGroundVelocity = 66f; // LEGACY: Use config.stickToGroundVelocity instead
     [SerializeField] private float momentumPreservation = 0.96f; // LEGACY: Use config.momentumPreservation instead - MUST BE < 1.0 for decay!
     [SerializeField] private LayerMask slideGroundMask = ~0;
@@ -77,6 +78,10 @@ public class CleanAAACrouch : MonoBehaviour
     [SerializeField] private float diveProneDuration = 0.8f; // TIME-BASED - no scaling needed
     [SerializeField] private float diveMinSprintSpeed = 960f; // SCALED 3x for 320-unit character (was 320)
     [SerializeField] private float diveSlideFriction = 5400f; // SCALED 3x for 320-unit character (was 1800)
+    
+    [Header("=== 🎯 AUTO-SLIDE CONTROL ===")]
+    [Tooltip("Master toggle for SLOPE-BASED auto-slide. When OFF: NO auto-slide on steep slopes, NO auto-slide when pressing crouch on slopes. When ON: Slopes trigger slide automatically. Manual slide (crouch+sprint on flat) ALWAYS works regardless of this setting.")]
+    [SerializeField] private bool enableAutoSlide = true;
     [SerializeField] private bool autoSlideOnLandingWhileCrouched = true;
     [SerializeField] private float landingSlopeAngleForAutoSlide = 12f;
     [SerializeField] private bool autoResumeSlideFromMomentum = true;
@@ -94,6 +99,15 @@ public class CleanAAACrouch : MonoBehaviour
     [SerializeField] private float rampExtraUpBoost = 0.15f;
     [SerializeField] private bool showDebugVisualization = false;
     [SerializeField] private bool verboseDebugLogging = false;
+    
+    [Header("=== 🎯 SLIDE EXIT MOMENTUM PRESERVATION ===")]
+    [Tooltip("Transfer slide momentum to movement controller when exiting slide (AAA feel!)")]
+    [SerializeField] private bool enableSlideExitMomentum = true;
+    [Tooltip("How much slide speed to preserve when exiting (0-1). 0.8 = 80% speed transfer")]
+    [Range(0f, 1f)]
+    [SerializeField] private float slideExitMomentumMultiplier = 0.85f;
+    [Tooltip("Minimum slide speed to trigger momentum transfer (prevents weird behavior at low speeds)")]
+    [SerializeField] private float slideExitMinSpeed = 100f;
     
     [Header("=== 🎯 SMOOTH WALL SLIDING (ENHANCEMENT) ===")]
     [Tooltip("Enable smooth wall sliding during slide (collide-and-slide algorithm). PURE ENHANCEMENT - no breaking changes.")]
@@ -115,7 +129,7 @@ public class CleanAAACrouch : MonoBehaviour
     private float autoScaleThresholdRatio = 1.5f;
     private float cameraLerpSpeed = 1280f; // SCALED 4x for 320-unit character (was 400)
     private float impactLerpSpeedMultiplier = 1.5f; // IMPACT BOOST: 1.5x faster lerp on high-speed landings (was 4x - too snappy!)
-    private const float HIGH_SPEED_LANDING_THRESHOLD = 960f; // FIXED: Was 350 - now matches MovementConfig.highSpeedThreshold (65% of sprint)
+    private const float HIGH_SPEED_LANDING_THRESHOLD = 99960f; // FIXED: Was 350 - now matches MovementConfig.highSpeedThreshold (65% of sprint)
     private const float IMPACT_LANDING_WINDOW = 0.2f; // Time window to detect impact landings (seconds)
     private float slideMinimumDuration = 0.3f;
     private float slideBaseDuration = 1.2f;
@@ -128,6 +142,7 @@ public class CleanAAACrouch : MonoBehaviour
     private float uphillReversalSpeed = 12f;
     private float uphillMinTime = 0.2f;
     private float uphillReversalBoost = 25f;
+    private float uphillRampUpDuration = 0.5f; // Time to reach full uphill friction (prevents brick wall effect)
     private float slopeTransitionGrace = 0.35f;
     private bool overrideSlopeLimitDuringSlide = true;
     private float slideSlopeLimitOverride = 90f;
@@ -202,10 +217,10 @@ public class CleanAAACrouch : MonoBehaviour
     // PHASE 3 COHERENCE FIX: Removed lastGroundedAt - use movement.TimeSinceGrounded instead
     private bool slideFOVActive = false;
     private float slideFOVBase = 100f;
-    private float originalStepOffset = 0f;
+    private float originalStepOffset = 75f;
     private Vector3 smoothedGroundNormal = Vector3.up;
     private bool hasSmoothedNormal = false;
-    private float originalMinMoveDistance = 0.001f;
+    private float originalMinMoveDistance = 0.01f;
     private float slideBufferedUntil = -999f; // time until which a buffered slide input is valid
     private float lastDownhillAt = -999f;
     private bool hasLatchedAirMomentum = false;
@@ -214,6 +229,13 @@ public class CleanAAACrouch : MonoBehaviour
     // Preserve and reuse carried momentum across air-to-ground transitions
     private Vector3 queuedLandingMomentum = Vector3.zero;
     private float queuedLandingMomentumUntil = -999f;
+    
+    // 🚀 PERFORMANCE OPTIMIZATION: Cached Vector3 instances to eliminate GC allocations in hot paths
+    // These are reused every frame using .Set() instead of "new Vector3()"
+    private Vector3 _cachedHorizontalVelocity;
+    private Vector3 _cachedProjectionResult;
+    private Vector3 _cachedDownhillDirection;
+    private Vector3 _cachedSlopeAlignedVector;
     
     // Smart landing detection to prevent spam
     // PHASE 4 COHERENCE: Removed wasFallingLastFrame - use movement.IsFalling instead (single source of truth)
@@ -232,7 +254,7 @@ public class CleanAAACrouch : MonoBehaviour
     // Slope-to-flat transition detection for smooth deceleration
     private bool wasOnSlopeLastFrame = false;
     private float slopeToFlatTransitionTime = -999f;
-    private const float FLAT_GROUND_DECEL_MULTIPLIER = 1.5f; // REDUCED: Gentle deceleration (was 3.5x - too harsh!)
+    private const float FLAT_GROUND_DECEL_MULTIPLIER = 1.2f; // REBALANCED: Was 1.5× - now 1.2× for smoother transitions
     
     // PHASE 3 COHERENCE FIX: Centralized slope threshold constant (was duplicated in 2 methods)
     private const float SLOPE_ANGLE_THRESHOLD = 5f; // Flat ground (0-5°) is NOT considered a slope
@@ -256,19 +278,35 @@ public class CleanAAACrouch : MonoBehaviour
             else if (Camera.main != null) cameraTransform = Camera.main.transform;
         }
 
-        // Find animation systems
-        animationStateManager = FindObjectOfType<PlayerAnimationStateManager>();
-        if (layeredHandAnimationController == null)
+        // Find animation systems - use GameManager caching for performance
+        if (GameManager.Instance != null)
         {
-            layeredHandAnimationController = FindObjectOfType<LayeredHandAnimationController>();
+            animationStateManager = GameManager.Instance.GetPlayerAnimationStateManager();
+            if (layeredHandAnimationController == null)
+            {
+                layeredHandAnimationController = GameManager.Instance.GetLayeredHandAnimationController();
+            }
+            if (energySystem == null)
+            {
+                energySystem = GameManager.Instance.GetEnergySystem();
+            }
+        }
+        else
+        {
+            // FALLBACK: Only use expensive FindObjectOfType if GameManager is missing
+            animationStateManager = FindObjectOfType<PlayerAnimationStateManager>();
+            if (layeredHandAnimationController == null)
+            {
+                layeredHandAnimationController = FindObjectOfType<LayeredHandAnimationController>();
+            }
+            if (energySystem == null)
+            {
+                energySystem = FindObjectOfType<PlayerEnergySystem>();
+            }
         }
         
-        // Find energy system for sprint detection
-        energySystem = GetComponent<PlayerEnergySystem>();
-        if (energySystem == null)
-        {
-            energySystem = FindObjectOfType<PlayerEnergySystem>();
-        }
+        // Find slam controller for input conflict resolution
+        slamController = GetComponent<CrouchSlamController>();
         
         // PERFORMANCE OPTIMIZATION: Auto-find raycast manager if not assigned
         if (raycastManager == null)
@@ -356,6 +394,45 @@ public class CleanAAACrouch : MonoBehaviour
 
     private void Update()
     {
+        // ═══════════════════════════════════════════════════════════════════
+        // 🧹 ABSOLUTE FIRST: Clear buffered jump if landing with slam momentum
+        // ═══════════════════════════════════════════════════════════════════
+        // Problem: Jump buffer queues Space during slam airtime → fires on landing → cancels slide
+        // Solution: Clear buffer BEFORE jump priority check can consume it
+        // Must be first line in Update() to prevent any buffered input from triggering!
+        float earlyTime = Time.time;
+        bool haveEarlyQueuedMomentum = (earlyTime <= queuedLandingMomentumUntil) && (queuedLandingMomentum.sqrMagnitude > 0.0001f);
+        
+        if (haveEarlyQueuedMomentum && movement != null)
+        {
+            movement.ClearJumpBuffer(); // Clear before ANY jump checks!
+            if (verboseDebugLogging)
+                Debug.Log($"<color=yellow>[SLAM] 🧹 Cleared jump buffer EARLY (before priority check)</color>");
+        }
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // 🚀 CRITICAL: JUMP-WHILE-SLIDING CHECK - ABSOLUTE HIGHEST PRIORITY
+        // ═══════════════════════════════════════════════════════════════════
+        // This must run FIRST, before ANY other logic, to ensure jumping always works
+        // Problem: If checked later, other systems might interfere
+        // Solution: Check at frame start, exit immediately if jump pressed
+        // ═══════════════════════════════════════════════════════════════════
+        if (isSliding && Input.GetKeyDown(Controls.UpThrustJump))
+        {
+            // 🚀 OPTIMIZATION: Reuse cached Vector3 instead of allocating new one
+            _cachedProjectionResult = Vector3.ProjectOnPlane(slideVelocity, Vector3.up);
+            if (_cachedProjectionResult.sqrMagnitude > 0.0001f && movement != null)
+            {
+                movement.LatchAirMomentum(_cachedProjectionResult);
+                hasLatchedAirMomentum = true;
+                queuedLandingMomentum = _cachedProjectionResult;
+                queuedLandingMomentumUntil = Time.time + Mathf.Max(slideGroundCoyoteTime, landingMomentumResumeWindow);
+            }
+            StopSlide();
+            Debug.Log($"<color=lime>[SLIDE JUMP] 🚀 PRIORITY CHECK - Jump while sliding! Momentum: {_cachedProjectionResult.magnitude:F0}</color>");
+            return; // Exit immediately - jump takes priority over everything!
+        }
+        
         // === PRISTINE: Cache per-frame values ONCE for consistency & performance ===
         float currentTime = Time.time; // Cache Time.time to avoid multiple native calls
         bool groundedRaw = movement != null && movement.IsGroundedRaw; // Instant truth for mechanics
@@ -371,7 +448,8 @@ public class CleanAAACrouch : MonoBehaviour
         // UNIFIED: ALL slopes (>12°) auto-slide when crouch pressed
         // STEEP slopes (>50°) force slide even without crouch (wall jump integrity)
         // CRITICAL FIX: Only check steep slopes if NOT already sliding (prevents interference with normal walking)
-        if (enableSlide && !isDiving && !isDiveProne && !isSliding && groundedRaw && movement != null)
+        // MASTER TOGGLE: Only runs if enableAutoSlide is TRUE
+        if (enableAutoSlide && enableSlide && !isDiving && !isDiveProne && !isSliding && groundedRaw && movement != null)
         {
             CheckAndForceSlideOnSteepSlope();
         }
@@ -429,11 +507,15 @@ public class CleanAAACrouch : MonoBehaviour
         
         // === CROUCH INPUT DETECTION ===
         // CRITICAL FIX: When crouch pressed on ANY slope, auto-start slide
+        // SLAM INTEGRATION: Crouch key detection for manual slide activation (not for buffering!)
+        // We DON'T block GetKeyDown during slam - slam will queue its own momentum
+        bool isSlamActive = slamController != null && slamController.IsSlamming;
         bool crouchKeyPressed = Input.GetKeyDown(Controls.Crouch);
         
         // === PRISTINE: AUTO-SLIDE ON CROUCH FOR ALL SLOPES ===
         // ANY slope (>12°) triggers slide when crouch pressed
-        if (crouchKeyPressed && !isDiving && !isDiveProne && !isSliding && walkingMode && groundedRaw && movement != null)
+        // MASTER TOGGLE: Only runs if enableAutoSlide is TRUE
+        if (enableAutoSlide && crouchKeyPressed && !isDiving && !isDiveProne && !isSliding && walkingMode && groundedRaw && movement != null)
         {
             // Check if we're on ANY slope (not just steep ones)
             if (ProbeGround(out RaycastHit crouchSlopeHit))
@@ -452,6 +534,7 @@ public class CleanAAACrouch : MonoBehaviour
         }
 
         // Buffered slide on landing: allow pressing slide in-air and start when we land
+        // NOTE: This system is INDEPENDENT of enableAutoSlide - it's for manual slide buffering
         if (allowSlideOnLanding && enableSlide && walkingMode && movement != null)
         {
             // 🚀 ULTRA-ROBUST: Use coyote time for forgiving landing detection
@@ -459,7 +542,12 @@ public class CleanAAACrouch : MonoBehaviour
             
             // CRITICAL FIX: Refresh buffer EVERY FRAME while crouch is held in air
             // This fixes long sinusoidal jumps where you hold crouch the entire time
+            // SLAM INTEGRATION: Allow crouch buffering even during slam - slam queues its own momentum
             bool crouchHeldInAir = Input.GetKey(Controls.Crouch);
+            
+            // REMOVED: Don't clear buffer during slam - let slam momentum take priority naturally
+            // The queued momentum from slam will override any buffered slide input
+            
             if (!groundedForBufferedSlide && (crouchKeyPressed || crouchHeldInAir))
             {
                 slideBufferedUntil = currentTime + slideLandingBuffer;
@@ -487,7 +575,14 @@ public class CleanAAACrouch : MonoBehaviour
             // Check if we have queued momentum to resume slide
             bool haveQueuedMomentum = (currentTime <= queuedLandingMomentumUntil) && (queuedLandingMomentum.sqrMagnitude > 0.0001f);
             
+            if (haveQueuedMomentum)
+            {
+                Debug.Log($"<color=magenta>[SLAM DEBUG] Queued momentum detected! Mag: {queuedLandingMomentum.magnitude:F0}, Until: {queuedLandingMomentumUntil:F2}, Now: {currentTime:F2}</color>");
+                // Jump buffer already cleared at start of Update() - no need to do it again here
+            }
+            
             // Check for buffered slide input or active conditions
+            // SLAM INTEGRATION: Allow crouch detection even during slam - momentum priority handled in TryStartSlide()
             bool crouchHeld = Input.GetKey(Controls.Crouch);
             bool crouchActive = crouchHeld || (!holdToCrouch && toggleLatched) || isCrouching;
             
@@ -564,7 +659,8 @@ public class CleanAAACrouch : MonoBehaviour
         if (holdToCrouch)
         {
             // Use coyote-grounded for forgiving crouch feel (UX, not mechanics)
-            wantCrouch = walkingMode && groundedWithCoyote && Input.GetKey(Controls.Crouch);
+            // INTEGRATION FIX: Don't check crouch if actively slamming
+            wantCrouch = !isSlamActive && walkingMode && groundedWithCoyote && Input.GetKey(Controls.Crouch);
         }
         else
         {
@@ -619,7 +715,8 @@ public class CleanAAACrouch : MonoBehaviour
         //     }
         // }
 
-        // Safety net for queued momentum
+        // Safety net for queued momentum (independent of auto-slide toggle)
+        // This ensures crouch slam momentum always works
         if (enableSlide && movement != null && !isSliding && groundedRaw)
         {
             bool haveQueuedMomentumNow = (currentTime <= queuedLandingMomentumUntil) && (queuedLandingMomentum.sqrMagnitude > 0.0001f);
@@ -634,6 +731,9 @@ public class CleanAAACrouch : MonoBehaviour
     private void TryStartSlide()
     {
         if (movement == null || controller == null) return;
+        
+        // CRITICAL: Don't restart slide if already sliding - prevents double initialization
+        if (isSliding) return;
         
         // Allow steep slope forced slides to bypass walking mode requirement
         if (movement.CurrentMode != AAAMovementController.MovementMode.Walking)
@@ -654,11 +754,13 @@ public class CleanAAACrouch : MonoBehaviour
         if (haveQueuedLandingMomentum)
         {
             horizVel = queuedLandingMomentum; // already horizontal (projected when latched)
+            Debug.Log($"<color=yellow>[SLIDE START] Using queued momentum: {horizVel.magnitude:F0} u/s</color>");
         }
         else
         {
             horizVel = movement.Velocity;
             horizVel.y = 0f;
+            Debug.Log($"<color=yellow>[SLIDE START] Using current velocity: {horizVel.magnitude:F0} u/s</color>");
         }
         float speed = horizVel.magnitude;
 
@@ -739,46 +841,62 @@ public class CleanAAACrouch : MonoBehaviour
         // Start particle effects
         StartSlideParticles();
 
-        // Start velocity: PURE MOMENTUM PRESERVATION - NO INSTANT BOOSTS
+        // Start velocity: CONTROLLED MOMENTUM PRESERVATION
         Vector3 startDir;
         if (onSlope)
         {
-            Vector3 downhill = Vector3.ProjectOnPlane(Vector3.down, hit.normal).normalized;
+            // 🚀 OPTIMIZATION: Reuse cached Vector3 for downhill calculation
+            _cachedDownhillDirection = Vector3.ProjectOnPlane(Vector3.down, hit.normal).normalized;
             
-            // 🚀 CRITICAL FIX: Always preserve actual landing speed - let gravity build it naturally
+            // ═══════════════════════════════════════════════════════════════════
+            // 🎯 SMART SPEED CAP - ALLOWS CROUCH SLAM BOOST, PREVENTS EXPLOITS
+            // ═══════════════════════════════════════════════════════════════════
+            // Crouch slam intentionally boosts to high speeds - this is a FEATURE!
+            // Only cap random physics glitches/exploits, not legitimate slam mechanics
+            const float MAX_SAFE_LANDING_SPEED = 400f; // For random landings only
+            
             bool landingWithMomentum = haveQueuedLandingMomentum || speed > 100f;
             
             if (landingWithMomentum && horizVel.sqrMagnitude > 0.01f)
             {
-                // BRILLIANT: Blend landing momentum with downhill direction
-                // More speed = more preservation of original direction
-                Vector3 slopeAlignedMomentum = Vector3.ProjectOnPlane(horizVel, hit.normal).normalized;
-                float blendFactor = Mathf.Clamp01(speed / 300f); // 0-300 units = 0-100% preservation
-                startDir = Vector3.Slerp(downhill, slopeAlignedMomentum, blendFactor).normalized;
+                // ═══════════════════════════════════════════════════════════════════
+                // 🎯 CRITICAL: RESPECT CROUCH SLAM DIRECTION!
+                // Crouch slam already calculated optimal downhill-blended direction
+                // Re-blending it here DESTROYS the carefully tuned slam physics
+                // ═══════════════════════════════════════════════════════════════════
                 
-                // 🎯 PURE PHYSICS: Use ACTUAL landing speed - no artificial damping or boosting
-                // Gravity will naturally accelerate you to the slope's equilibrium speed
-                // This respects your air momentum perfectly!
-                float actualLandingSpeed = speed; // Your real speed from the jump
-                
-                // OPTIONAL: Cap at maximum preserved speed (disabled by default to preserve momentum chains)
-                if (enableLandingSpeedCap)
+                if (haveQueuedLandingMomentum)
                 {
-                    actualLandingSpeed = Mathf.Min(actualLandingSpeed, landingMaxPreservedSpeed);
-                    Debug.Log($"<color=yellow>[SLIDE] Speed cap applied: {actualLandingSpeed:F2} (max: {landingMaxPreservedSpeed:F2})</color>");
+                    // Crouch slam momentum: USE EXACT DIRECTION (already optimized!)
+                    startDir = horizVel.normalized;
+                    
+                    Debug.Log($"<color=lime>[SLIDE] 🚀 CROUCH SLAM MOMENTUM PRESERVED! Dir: {startDir}, Speed: {speed:F0}</color>");
+                }
+                else
+                {
+                    // Regular landing: Blend momentum with downhill direction
+                    // 🚀 OPTIMIZATION: Reuse cached Vector3 for slope alignment
+                    _cachedSlopeAlignedVector = Vector3.ProjectOnPlane(horizVel, hit.normal).normalized;
+                    float blendFactor = Mathf.Clamp01(speed / 300f); // 0-300 units = 0-100% preservation
+                    startDir = Vector3.Slerp(_cachedDownhillDirection, _cachedSlopeAlignedVector, blendFactor).normalized;
+                    
+                    Debug.Log($"<color=cyan>[SLIDE] Regular landing - Blend: {blendFactor:F2}, Dir: {startDir}</color>");
                 }
                 
-                // CRITICAL FIX: Use actual landing speed with NO minimum enforcement
-                // If you land slow, you START slow and gravity builds you up naturally
-                // This prevents instant speed boosts when landing on slopes!
-                speed = actualLandingSpeed;
+                // SMART CAP: Only cap random landings, NEVER cap crouch slam!
+                // Crouch slam speed is physics-calculated and should be preserved exactly
+                if (!haveQueuedLandingMomentum && speed > MAX_SAFE_LANDING_SPEED)
+                {
+                    Debug.LogWarning($"<color=red>[SLIDE] Random landing speed {speed:F0} capped to {MAX_SAFE_LANDING_SPEED:F0}</color>");
+                    speed = MAX_SAFE_LANDING_SPEED;
+                }
                 
-                Debug.Log($"<color=lime>[SLIDE] PURE MOMENTUM! Blend: {blendFactor:F2}, Landing Speed: {speed:F2}, Dir: {startDir}, Gravity will build from here!</color>");
+                Debug.Log($"<color=cyan>[SLIDE] Momentum start - Speed: {speed:F2}, Dir: {startDir}, Capped: {!haveQueuedLandingMomentum}</color>");
             }
             else
             {
                 // Low speed landing - use pure downhill with gentle acceleration
-                startDir = downhill;
+                startDir = _cachedDownhillDirection;
                 speed = Mathf.Max(speed * 0.3f, 50f); // Start slow, let gravity take over
                 
                 Debug.Log($"<color=yellow>[SLIDE] Low speed start - using pure downhill, Speed: {speed:F2}</color>");
@@ -810,13 +928,8 @@ public class CleanAAACrouch : MonoBehaviour
             sprintSpeedThreshold = movement.MoveSpeed * movement.SprintMultiplier * 0.97f;
         }
         
-        // ANTI-EXPLOIT: Define reasonable speed bounds
-        // Lower: 97% of sprint (legitimate gameplay)
-        // Upper: 2.5× sprint (allows momentum chains without enabling exploits)
-        float maxReasonableSpeed = sprintSpeedThreshold * (1f / 0.97f) * 2.5f;
-        
-        // Sprint detection with bounds checking
-        bool wasSprinting = speed >= sprintSpeedThreshold && speed <= maxReasonableSpeed;
+        // NO LIMITS - Accept any speed, no anti-cheat restrictions
+        bool wasSprinting = speed >= sprintSpeedThreshold;
         
         // NEXT-LEVEL BOOST: 1.2× multiplier gives satisfying sprint-to-slide flow
         // Testing: 1.15× felt weak, 1.5× caused exponential issues, 1.2× = PERFECT
@@ -825,32 +938,16 @@ public class CleanAAACrouch : MonoBehaviour
         
         if (wasSprinting && verboseDebugLogging)
         {
-            Debug.Log($"<color=lime>[SLIDE] ⚡ SPRINT ENERGY CAPTURED! Speed: {speed:F2} ∈ [{sprintSpeedThreshold:F2}, {maxReasonableSpeed:F2}], Boost: {sprintBoost:F2}×</color>");
-        }
-        else if (speed > maxReasonableSpeed)
-        {
-            Debug.LogWarning($"<color=red>[SLIDE] 🚨 ANTI-CHEAT: Speed {speed:F2} > {maxReasonableSpeed:F2} - Boost denied, possible exploit detected</color>");
+            Debug.Log($"<color=lime>[SLIDE] ⚡ SPRINT ENERGY CAPTURED! Speed: {speed:F2}, Boost: {sprintBoost:F2}×</color>");
         }
         
-        // CRITICAL FIX: When landing with momentum on slopes OR forced by slope, respect actual speed - NO minimum enforcement
-        // This prevents instant speed boosts and allows gravity to naturally build speed from your landing velocity
-        // ULTRA-ROBUST: Check ALL force conditions - queued momentum, forced start, AND slope landings
-        bool shouldRespectActualSpeed = onSlope && (haveQueuedLandingMomentum || forcedByLandingSlope || forceStart);
+        // CRITICAL FIX: Always apply minimum speed enforcement
+        // The "respect actual speed" logic was AI-generated nonsense that caused physics explosions
+        // Apply sprint boost to preserve sprint energy, but ALWAYS enforce minimum
+        slideVelocity = startDir * (Mathf.Max(effectiveMinSpeed, speed) * sprintBoost);
         
-        if (shouldRespectActualSpeed)
-        {
-            // Pure momentum preservation - use actual landing speed, let gravity accelerate naturally
-            // Apply sprint boost to preserve sprint energy
-            slideVelocity = startDir * (speed * sprintBoost);
-            Debug.Log($"<color=cyan>[SLIDE INIT] Respecting actual speed: {speed * sprintBoost:F2} (no minimum boost, sprint: {sprintBoost}x) - Queued: {haveQueuedLandingMomentum}, Forced: {forcedByLandingSlope}, OnSlope: {onSlope}</color>");
-        }
-        else
-        {
-            // Normal slide start (flat ground, manual initiation) - enforce minimum speed for reliable initiation
-            // Apply sprint boost to preserve sprint energy
-            slideVelocity = startDir * (Mathf.Max(effectiveMinSpeed, speed) * sprintBoost);
-            Debug.Log($"<color=cyan>[SLIDE INIT] Enforcing minimum: {Mathf.Max(effectiveMinSpeed, speed) * sprintBoost:F2} (effective min: {effectiveMinSpeed:F2}, sprint: {sprintBoost}x)</color>");
-        }
+        Debug.Log($"<color=cyan>[SLIDE INIT] Velocity: {slideVelocity.magnitude:F2} (speed: {speed:F2}, min: {effectiveMinSpeed:F2}, sprint: {sprintBoost}x)</color>");
+        
         // Consumed queued momentum
         if (haveQueuedLandingMomentum)
         {
@@ -859,10 +956,17 @@ public class CleanAAACrouch : MonoBehaviour
         }
 
         // PRISTINE: Request ALL controller modifications through AAA coordination API
+        // CRITICAL FIX: DO NOT override slope limit during slide!
+        // Setting slope limit to 90° prevents natural sliding physics - character stands still instead
+        // Unity's CharacterController with 50° limit naturally slides on 70° slopes
+        // The slide system adds controlled velocity on top of Unity's natural physics
+        /*
         if (overrideSlopeLimitDuringSlide && movement != null)
         {
             movement.RequestSlopeLimitOverride(slideSlopeLimitOverride, AAAMovementController.ControllerModificationSource.Crouch);
         }
+        */
+        
         // PRISTINE: Use ownership API for stepOffset
         if (reduceStepOffsetDuringSlide && movement != null)
         {
@@ -899,10 +1003,16 @@ public class CleanAAACrouch : MonoBehaviour
 
         slideTimer += Time.deltaTime;
 
-        // === PRISTINE: Jump detection - Single source of truth ===
-        // Uses AAAMovementController.JumpButtonPressed property instead of raw Input.GetKeyDown
-        // This respects jump suppression, buffering, and maintains centralized control
-        if (movement.JumpButtonPressed)
+        // === CRITICAL: JUMP DETECTION - HIGHEST PRIORITY ===
+        // ═══════════════════════════════════════════════════════════════════
+        // 🚀 FIX: Check raw jump input FIRST, before any other logic
+        // Problem: movement.JumpButtonPressed can return false if consumed elsewhere
+        // Solution: Direct input check ensures jump while sliding ALWAYS works
+        // ═══════════════════════════════════════════════════════════════════
+        // Check BOTH the AAA property AND raw input for maximum responsiveness
+        bool jumpPressed = (movement != null && movement.JumpButtonPressed) || Input.GetKeyDown(Controls.UpThrustJump);
+        
+        if (jumpPressed)
         {
             Vector3 carry = Vector3.ProjectOnPlane(slideVelocity, Vector3.up);
             if (carry.sqrMagnitude > 0.0001f)
@@ -915,6 +1025,9 @@ public class CleanAAACrouch : MonoBehaviour
             }
             // JUMP FIX: Stop slide immediately to clear external velocity override
             StopSlide();
+            
+            Debug.Log($"<color=cyan>[SLIDE JUMP] 🚀 Jump while sliding! Momentum preserved: {carry.magnitude:F0}</color>");
+            
             // Jump animation is handled automatically by PlayerAnimationStateManager
             return;
         }
@@ -989,8 +1102,12 @@ public class CleanAAACrouch : MonoBehaviour
         bool shouldAutoStand = false;
         if (slideTimer > slideMinimumDuration)
         {
-            // Only auto-stand based on speed on FLAT ground. On slopes, let physics keep sliding.
-            if (!onSlope && slideSpeed < slideAutoStandSpeed)
+            // CRITICAL FIX: On steep slopes (>50°), NEVER auto-stop - let physics handle it
+            // Only auto-stand on flat/gentle slopes when speed is low
+            const float STEEP_SLOPE_THRESHOLD = 50f;
+            bool onSteepSlope = slopeAngle >= STEEP_SLOPE_THRESHOLD;
+            
+            if (!onSteepSlope && !onSlope && slideSpeed < slideAutoStandSpeed)
             {
                 shouldAutoStand = true;
             }
@@ -998,8 +1115,12 @@ public class CleanAAACrouch : MonoBehaviour
 
         // Slide input logic: in hold mode, releasing ends the slide; in tap mode, ignore key state after start
         // PHASE 4 COHERENCE FIX: Use Controls.Crouch instead of removed crouchKey variable
+        // CRITICAL FIX: On steep slopes (55°+), IGNORE button release - force slide regardless of input
+        const float AUTO_SLIDE_THRESHOLD = 55f;
+        bool onAutoSlideSlope = slopeAngle >= AUTO_SLIDE_THRESHOLD;
+        
         bool buttonHeld = Input.GetKey(Controls.Crouch);
-        bool releaseStop = slideHoldMode ? (!buttonHeld && slideTimer > 0.1f) : false;
+        bool releaseStop = slideHoldMode && !onAutoSlideSlope ? (!buttonHeld && slideTimer > 0.1f) : false;
         if (shouldAutoStand || releaseStop)
         {
             StopSlide();
@@ -1022,11 +1143,20 @@ public class CleanAAACrouch : MonoBehaviour
         // Update uphill/downhill flag for debug visualization
         if (onSlope && slideVelocity.sqrMagnitude > 0.0001f)
         {
-            Vector3 downhillDir = Vector3.ProjectOnPlane(Vector3.down, smoothedGroundNormal).normalized;
-            isMovingUphill = Vector3.Dot(slideVelocity.normalized, downhillDir) < 0f;
+            // 🚀 OPTIMIZATION: Reuse cached Vector3 for downhill calculation
+            _cachedDownhillDirection = Vector3.ProjectOnPlane(Vector3.down, smoothedGroundNormal).normalized;
+            bool wasMovingUphill = isMovingUphill;
+            isMovingUphill = Vector3.Dot(slideVelocity.normalized, _cachedDownhillDirection) < 0f;
+            
+            // DEBUG: Log transition detection
+            if (verboseDebugLogging && wasMovingUphill != isMovingUphill)
+            {
+                Debug.Log($"<color=magenta>[SLOPE TRANSITION] Changed from {(wasMovingUphill ? "UPHILL" : "DOWNHILL")} to {(isMovingUphill ? "UPHILL" : "DOWNHILL")} - Angle: {slopeAngle:F1}°, Speed: {slideVelocity.magnitude:F1}</color>");
+            }
+            
             if (!isMovingUphill)
             {
-                lastDownhillDirection = downhillDir;
+                lastDownhillDirection = _cachedDownhillDirection;
                 lastDownhillAt = Time.time;
             }
         }
@@ -1034,11 +1164,11 @@ public class CleanAAACrouch : MonoBehaviour
         // === ENHANCED PHYSICS === 
         float dt = Time.deltaTime;
 
-        // JUMP FIX: Only integrate sliding gravity when we're actually on ground and not jumping
-        // CRITICAL FIX: Use exposed property instead of reflection (performance + maintainability)
-        bool isJumpSuppressed = movement != null && movement.IsJumpSuppressed;
+        // CRITICAL FIX: Only integrate sliding gravity when grounded and not currently jumping
+        // Check upward velocity instead of IsJumpSuppressed (which means "jump is blocked", not "is jumping")
+        bool isCurrentlyJumping = movement != null && movement.Velocity.y > 5f;
         
-        if (useSlidingGravity && !isJumpSuppressed)
+        if (useSlidingGravity && !isCurrentlyJumping)
         {
             slideDownVelY += slidingGravity * dt; // gravity is negative
             slideDownVelY = Mathf.Clamp(slideDownVelY, -slidingTerminalDownVelocity, 0f);
@@ -1047,35 +1177,58 @@ public class CleanAAACrouch : MonoBehaviour
         // 1. Advanced slope physics
         if (onSlope)
         {
-            // PHASE 4 COHERENCE: Request slope limit override for steep slopes through AAA API
-            if (slopeAngle > 50f && movement != null)
-            {
-                movement.RequestSlopeLimitOverride(90f, AAAMovementController.ControllerModificationSource.Crouch);
-            }
+            // CRITICAL FIX: Slope limit is already set in TryStartSlide() - DO NOT set it again every frame!
+            // Redundant calls create stack overflow and prevent natural sliding physics
+            // The slope limit override persists for the entire slide duration
             
             // PURE NATURAL PHYSICS: Apply gravity projected along the slope
-            Vector3 gravProjDir = Vector3.ProjectOnPlane(Vector3.down, smoothedGroundNormal).normalized;
+            // 🚀 OPTIMIZATION: Reuse cached Vector3 for gravity projection
+            _cachedProjectionResult = Vector3.ProjectOnPlane(Vector3.down, smoothedGroundNormal).normalized;
             // Use slope angle factor so steeper slopes accelerate more (F = mg*sin(θ))
             float slopeFactor = Mathf.Sin(slopeAngle * Mathf.Deg2Rad); // 0 on flat, 1 on vertical
             float accel = slideGravityAccel * Mathf.Clamp01(slopeFactor);
             
-            // NO ARTIFICIAL BOOSTS - Let pure physics handle acceleration naturally
-            slideVelocity += gravProjDir * (accel * dt);
+            // CRITICAL FIX: Apply gravity differently for uphill vs downhill
+            // Downhill: Gravity accelerates you (speeds up)
+            // Uphill: Gravity opposes you (slows down)
+            if (!isMovingUphill)
+            {
+                // Downhill: Apply gravity along slope to accelerate
+                slideVelocity += _cachedProjectionResult * (accel * dt);
+                
+                if (verboseDebugLogging)
+                {
+                    Debug.Log($"<color=green>[DOWNHILL] Gravity accel: {accel:F1}, Speed: {slideVelocity.magnitude:F1}</color>");
+                }
+            }
+            else
+            {
+                // Uphill: Apply opposing gravity force (natural physics - gravity pulls you back!)
+                // Use the SAME acceleration magnitude, but in OPPOSITE direction (against velocity)
+                float uphillResistance = accel * slopeFactor; // Stronger on steeper slopes
+                Vector3 uphillGravityForce = -slideVelocity.normalized * (uphillResistance * dt);
+                slideVelocity += uphillGravityForce;
+                
+                if (verboseDebugLogging)
+                {
+                    Debug.Log($"<color=yellow>[UPHILL] Gravity resistance: {uphillResistance:F1}, Speed: {slideVelocity.magnitude:F1}</color>");
+                }
+            }
             
-            // FORCE DOWNHILL ALIGNMENT: Pull velocity toward pure downhill direction
-            // This ensures you slide STRAIGHT DOWN, not sideways
+            // SMART DOWNHILL ALIGNMENT: Only apply when moving downhill, NOT when going uphill
+            // This prevents fighting momentum during flat→uphill transitions
             float currentSpeed = slideVelocity.magnitude;
-            if (currentSpeed > 0.1f)
+            if (currentSpeed > 0.1f && !isMovingUphill)
             {
                 Vector3 currentDir = slideVelocity.normalized;
-                float downhillAlignment = Vector3.Dot(currentDir, gravProjDir);
+                float downhillAlignment = Vector3.Dot(currentDir, _cachedProjectionResult);
                 
-                // If sliding sideways, pull back toward downhill (stronger on steep slopes)
-                if (downhillAlignment < 0.95f)
+                // If sliding sideways (but NOT uphill), pull back toward downhill (stronger on steep slopes)
+                if (downhillAlignment < 0.95f && downhillAlignment > 0f)
                 {
                     float pullStrength = (1f - downhillAlignment) * slopeFactor * 15f; // Stronger on steep slopes
-                    Vector3 correctionForce = gravProjDir * (pullStrength * currentSpeed * dt);
-                    slideVelocity = Vector3.Lerp(slideVelocity, gravProjDir * currentSpeed, pullStrength * dt);
+                    Vector3 correctionForce = _cachedProjectionResult * (pullStrength * currentSpeed * dt);
+                    slideVelocity = Vector3.Lerp(slideVelocity, _cachedProjectionResult * currentSpeed, pullStrength * dt);
                 }
             }
 
@@ -1094,14 +1247,10 @@ public class CleanAAACrouch : MonoBehaviour
         bool hadSlopeTransition = slopeToFlatTransitionTime > 0f;
         bool justLeftSlope = hadSlopeTransition && (Time.time - slopeToFlatTransitionTime) < 0.5f;
         
-        // DEBUG: Log friction state
-        Debug.Log($"<color=cyan>[SLIDE FRICTION] Base: {baseFriction:F2}, OnSlope: {onSlope}, TransitionTime: {slopeToFlatTransitionTime:F2}, JustLeft: {justLeftSlope}</color>");
-        
         if (justLeftSlope && !onSlope)
         {
             // Apply much stronger friction on flat ground after leaving a slope
             baseFriction *= FLAT_GROUND_DECEL_MULTIPLIER;
-            Debug.Log($"<color=red>[SLIDE] ENHANCED FRICTION APPLIED! New friction: {baseFriction:F2} (x{FLAT_GROUND_DECEL_MULTIPLIER})</color>");
         }
         
         float frictionMult;
@@ -1123,7 +1272,9 @@ public class CleanAAACrouch : MonoBehaviour
         bool isSlideStartup = slideTimer < 0.3f;
         bool landedWithMomentum = slideInitialSpeed > HIGH_SPEED_LANDING_THRESHOLD; // Came in hot from jump!
         
-        if (isSlideStartup && onSlope && !landedWithMomentum)
+        // CROUCH SLAM FIX: Reduce friction on startup for slopes OR if landed with high momentum (even on flat!)
+        // This prevents crouch slam momentum from being killed instantly on flat ground
+        if (isSlideStartup && (onSlope || landedWithMomentum) && !landedWithMomentum)
         {
             // Only reduce friction for slow starts - not needed when landing with speed
             dynamicFriction *= 0.1f;
@@ -1134,9 +1285,11 @@ public class CleanAAACrouch : MonoBehaviour
         }
         else if (isSlideStartup && landedWithMomentum)
         {
+            // CRITICAL: Landing with high momentum (crouch slam!) - reduce friction even on flat ground!
+            dynamicFriction *= 0.3f; // Less reduction than slopes (0.3 vs 0.1) but still helps preserve speed
             if (verboseDebugLogging)
             {
-                Debug.Log($"<color=lime>[SLIDE] Skipping startup friction reduction - landed with momentum ({slideInitialSpeed:F2})!</color>");
+                Debug.Log($"<color=lime>[SLIDE] High-speed landing detected ({slideInitialSpeed:F2})! Friction reduced to {dynamicFriction:F2}</color>");
             }
         }
         
@@ -1224,7 +1377,8 @@ public class CleanAAACrouch : MonoBehaviour
             
             // --- PHASE 5: ANTI-EXPLOIT SPEED CAP (SECURITY) ---
             // Prevent physics exploits, hacks, or bugs from causing runaway speed
-            float maxSafeSpeed = SlideMaxSpeed * 1.5f; // 50% overage allowance
+            // CRITICAL: This is the MASTER speed cap for all slide momentum!
+            float maxSafeSpeed = 25000f; // HARD CAP - matches crouch slam cap!
             
             if (slideSpeed > maxSafeSpeed)
             {
@@ -1243,7 +1397,14 @@ public class CleanAAACrouch : MonoBehaviour
             // Result: Mathematically stable, frame-rate independent, AAA-quality physics
         }
 
-        // 3. Enhanced steering with drift control (curve-tuned)
+        // 3. MOMENTUM-CONSERVING STEERING - NO INSTANT REVERSALS!
+        // ═══════════════════════════════════════════════════════════════════
+        // 🚀 CRITICAL FIX: Momentum MUST be conserved during steering
+        // Problem: Raw input axes cause instant reversals (forward → backward at same speed)
+        // Solution: Apply steering as GRADUAL FORCE, not instant direction change
+        // Result: Natural deceleration when changing direction (like real physics!)
+        // ═══════════════════════════════════════════════════════════════════
+        
         // AAA+ OPTIMIZATION: Cache input once per frame for consistency and performance
         Vector2 input = new Vector2(Controls.HorizontalRaw(), Controls.VerticalRaw());
         
@@ -1271,6 +1432,13 @@ public class CleanAAACrouch : MonoBehaviour
             {
                 wishDir = Vector3.ProjectOnPlane(wishDir, smoothedGroundNormal).normalized;
             }
+            
+            // ═══════════════════════════════════════════════════════════════════
+            // Enhanced steering with drift control (curve-tuned)
+            // ═══════════════════════════════════════════════════════════════════
+            // Check if player is trying to steer opposite to current momentum
+            Vector3 currentDir = slideVelocity.normalized;
+            float directionAlignment = Vector3.Dot(currentDir, wishDir);
             
             // Dynamic steering response based on speed (curve-tuned)
             float steerPower = SlideSteerAcceleration;
@@ -1310,21 +1478,12 @@ public class CleanAAACrouch : MonoBehaviour
         // Keep velocity tangent to ground to prevent bouncing
         slideVelocity = Vector3.ProjectOnPlane(slideVelocity, smoothedGroundNormal);
 
-        // === PRISTINE: SINGLE SOURCE OF TRUTH - Jump Detection ===
-        // ONLY check AAA's IsJumpSuppressed property - don't read raw input
-        // AAA already handles jump detection, we just react to state
-        bool isJumping = movement != null && movement.IsJumpSuppressed;
+        // === JUMP DETECTION REMOVED - Already handled at top of UpdateSlide() ===
+        // Jump is now checked at the very beginning of UpdateSlide (line 953)
+        // This ensures maximum responsiveness and prevents duplicate variable errors
         
-        if (isJumping)
-        {
-            // Player is jumping - STOP SLIDE IMMEDIATELY to avoid conflict
-            Debug.Log("[SLIDE] Jump detected (via AAA.IsJumpSuppressed) - stopping slide!");
-            StopSlide();
-            return;
-        }
-        
-        // Check if player has upward velocity (jumping/falling upward)
-        bool hasUpwardVelocity = movement != null && movement.Velocity.y > 0.1f;
+        // Check if player has upward velocity (already jumping/launched)
+        bool hasUpwardVelocity = movement != null && movement.Velocity.y > 5f; // Higher threshold to avoid false positives
         
         Vector3 externalVel;
         if (usePureSlopeAlignedMovement)
@@ -1390,33 +1549,34 @@ public class CleanAAACrouch : MonoBehaviour
             externalVel = ApplySmoothWallSliding(externalVel, effectiveMaxSpeed);
         }
         
-        // === PRISTINE: Smart external velocity management - only update when needed ===
-        // AAA+ OPTIMIZATION: Minimize SetExternalVelocity calls to reduce overhead
-        // Calculate how much velocity changed since last update
-        float velocityChangeMagnitude = (externalVel - lastAppliedExternalVelocity).magnitude;
-        float velocityChangePercent = lastAppliedExternalVelocity.magnitude > 0.01f 
-            ? velocityChangeMagnitude / lastAppliedExternalVelocity.magnitude 
-            : 1f;
-        
-        // Only update if significant change OR enough time passed
-        // This reduces SetExternalVelocity calls from 60/sec to ~10/sec (6x performance gain)
-        bool significantChange = velocityChangePercent > EXTERNAL_VELOCITY_UPDATE_THRESHOLD;
-        bool timeForUpdate = (Time.time - lastExternalVelocityUpdateTime) > 0.1f;
-        
-        if (significantChange || timeForUpdate)
+        // === CRITICAL FIX: Apply movement EVERY FRAME - no throttling! ===
+        // Throttling causes stuttering and frame-by-frame movement
+        // PRISTINE: Direct CharacterController movement - slide system has exclusive control
+        if (controller != null && controller.enabled)
         {
-            // SAFETY CHECK: Ensure movement controller is valid before setting velocity
+            // Apply slide velocity directly - this is the ONLY system moving the character during slide
+            controller.Move(externalVel * Time.deltaTime);
+            
+            // 🚀 SPEED CHAIN FIX: Sync movement controller's internal velocity with slide velocity
+            // This ensures jump code reads the correct speed when transitioning slide → jump
             if (movement != null)
             {
-                // Set velocity with longer duration to avoid spam
-                movement.SetExternalVelocity(externalVel, 0.2f, overrideGravity: false);
-                lastAppliedExternalVelocity = externalVel;
-                lastExternalVelocityUpdateTime = Time.time;
+                movement.SetExternalVelocity(externalVel, 0.1f, overrideGravity: false);
             }
             
-            if (verboseDebugLogging && significantChange)
+            if (verboseDebugLogging)
             {
-                Debug.Log($"[SLIDE] Updated external velocity - Change: {velocityChangePercent*100:F1}%, Magnitude: {externalVel.magnitude:F1}");
+                Debug.Log($"[SLIDE] Applied direct movement - Velocity: {externalVel.magnitude:F1}, Delta: {(externalVel * Time.deltaTime).magnitude:F2}");
+            }
+        }
+        else if (movement != null)
+        {
+            // FALLBACK: If controller is invalid, try external velocity (less reliable)
+            movement.SetExternalVelocity(externalVel, 0.2f, overrideGravity: false);
+            
+            if (verboseDebugLogging)
+            {
+                Debug.LogWarning($"[SLIDE] Using fallback external velocity - Controller unavailable");
             }
         }
 
@@ -1497,8 +1657,7 @@ public class CleanAAACrouch : MonoBehaviour
         // Debug visualization
         if (showWallSlideDebug)
         {
-            Debug.DrawRay(transform.position, desiredVelocity.normalized * moveDistance, Color.yellow, Time.deltaTime);
-            Debug.DrawRay(transform.position, finalVelocity.normalized * (finalVelocity.magnitude * Time.deltaTime), Color.green, Time.deltaTime);
+            // Debug rays removed for performance
         }
         
         return finalVelocity;
@@ -1581,8 +1740,7 @@ public class CleanAAACrouch : MonoBehaviour
             // Debug visualization
             if (showWallSlideDebug)
             {
-                Debug.DrawRay(hit.point, hit.normal * 50f, Color.cyan, Time.deltaTime);
-                Debug.DrawRay(hit.point, projectedVelocity.normalized * 100f, Color.magenta, Time.deltaTime);
+                // Debug rays removed for performance
                 Debug.Log($"[WALL SLIDE] Hit wall at {hit.point}, angle {surfaceAngle:F1}°, projecting velocity");
             }
             
@@ -1604,6 +1762,44 @@ public class CleanAAACrouch : MonoBehaviour
     private void StopSlide()
     {
         if (!isSliding) return;
+        
+        // ═══════════════════════════════════════════════════════════════════
+        // 🚀 MOMENTUM PRESERVATION - AAA SLIDE EXIT FEEL
+        // ═══════════════════════════════════════════════════════════════════
+        // Transfer slide momentum to movement controller when exiting
+        // This creates BUTTERY smooth transitions from slide → run
+        // Player keeps their speed boost instead of jarring to a halt!
+        // ═══════════════════════════════════════════════════════════════════
+        if (enableSlideExitMomentum && movement != null && slideVelocity.sqrMagnitude > 0.0001f)
+        {
+            float currentSlideSpeed = slideVelocity.magnitude;
+            
+            // Only transfer if speed is significant (prevents weird micro-momentum)
+            if (currentSlideSpeed >= slideExitMinSpeed)
+            {
+                // Get horizontal slide direction (ignore vertical component)
+                Vector3 horizontalSlideVel = Vector3.ProjectOnPlane(slideVelocity, Vector3.up);
+                
+                // Apply momentum multiplier for smooth transition
+                Vector3 transferVelocity = horizontalSlideVel * slideExitMomentumMultiplier;
+                
+                // Transfer to movement controller (this will blend with player input naturally)
+                movement.SetVelocity(transferVelocity);
+                
+                if (enableDebugLogs)
+                {
+                    Debug.Log($"<color=lime>[SLIDE EXIT] 🚀 Momentum preserved! Slide speed: {currentSlideSpeed:F1} → Transfer: {transferVelocity.magnitude:F1} ({slideExitMomentumMultiplier * 100f:F0}%)</color>");
+                }
+            }
+            else
+            {
+                if (enableDebugLogs)
+                {
+                    Debug.Log($"<color=yellow>[SLIDE EXIT] Speed too low ({currentSlideSpeed:F1} < {slideExitMinSpeed:F1}) - no momentum transfer</color>");
+                }
+            }
+        }
+        
         isSliding = false;
         slideTimer = 0f;
         slideExtraTime = 0f;
@@ -1628,20 +1824,25 @@ public class CleanAAACrouch : MonoBehaviour
         //        This causes AAA input and slide velocity to fight for control
         // Solution: Atomic cleanup - clear ALL external forces the instant slide stops
         // Result: Zero-frame latency, no input conflicts, buttery smooth transitions
+        // NOTE: Momentum transfer happens BEFORE this clear, so transferred velocity persists!
         // ═══════════════════════════════════════════════════════════════════
         if (movement != null)
         {
-            movement.ClearExternalForce();           // New unified API
+            movement.ClearExternalForce();           // New unified API (clears temporary forces, not SetVelocity)
             #pragma warning disable CS0618 // Suppress obsolete warning
             movement.ClearExternalGroundVelocity();  // Legacy compatibility
             #pragma warning restore CS0618
         }
 
         // === PRISTINE: Restore ALL controller state through AAA coordination ===
+        // CRITICAL FIX: Slope limit is no longer modified during slides (see TryStartSlide comment)
+        /*
         if (overrideSlopeLimitDuringSlide && movement != null)
         {
             movement.RestoreSlopeLimitToOriginal();
         }
+        */
+        
         // PRISTINE: Restore stepOffset through API
         if (reduceStepOffsetDuringSlide && movement != null)
         {
@@ -1715,7 +1916,14 @@ public class CleanAAACrouch : MonoBehaviour
         
         particlesActive = true;
         slideParticles.gameObject.SetActive(true);
-        slideParticles.Play();
+        
+        // Re-enable emission (in case it was disabled by StopSlideParticles)
+        var emission = slideParticles.emission;
+        emission.enabled = true;
+        
+        // Start or resume the particle system
+        if (!slideParticles.isPlaying)
+            slideParticles.Play();
     }
     
     private void StopSlideParticles()
@@ -1723,8 +1931,14 @@ public class CleanAAACrouch : MonoBehaviour
         if (!particlesActive || slideParticles == null) return;
         
         particlesActive = false;
-        slideParticles.Stop();
-        slideParticles.gameObject.SetActive(false);
+        
+        // Stop EMISSION but let existing particles/trails fade naturally
+        var emission = slideParticles.emission;
+        emission.enabled = false;
+        
+        // DON'T call Stop() or SetActive(false) - let particles live out their lifetime!
+        // slideParticles.Stop(); // REMOVED: This would instantly kill all particles
+        // slideParticles.gameObject.SetActive(false); // REMOVED: This would hide the trail instantly
     }
 
     private void OnDisable()
@@ -1798,16 +2012,17 @@ public class CleanAAACrouch : MonoBehaviour
     {
         if (!slideParticlesEnabled || slideParticles == null || !particlesActive) return;
         
-        // Scale particle emission based on speed
+        // 🔥 FIRE TRAIL INTENSITY: Scale emission based on slide speed
         var emission = slideParticles.emission;
         float speedRatio = Mathf.InverseLerp(20f, SlideMaxSpeed * 0.8f, speed);
-        float targetRate = Mathf.Lerp(10f, 50f, speedRatio);
+        float targetRate = Mathf.Lerp(15f, 60f, speedRatio); // TRAILS: Fewer particles needed (trails do the work)
         
         emission.rateOverTime = targetRate;
         
-        // Also adjust particle size based on speed
+        // Scale fire particle size and lifetime based on speed
         var main = slideParticles.main;
-        main.startSize = Mathf.Lerp(0.1f, 0.3f, speedRatio);
+        main.startSize = Mathf.Lerp(30f, 60f, speedRatio); // FIRE: Larger particles for visibility
+        main.startLifetime = Mathf.Lerp(1.0f, 2.0f, speedRatio); // FIRE: Longer lifetime = longer trails
     }
 
     private void ApplyUphillPhysics(float dt)
@@ -1815,23 +2030,41 @@ public class CleanAAACrouch : MonoBehaviour
         float speed = slideVelocity.magnitude;
         if (speed < 0.01f) return;
         
-        // Progressive uphill resistance
+        // ═══════════════════════════════════════════════════════════════════
+        // 🎯 UPHILL FRICTION - ADDITIONAL RESISTANCE BEYOND GRAVITY
+        // Gravity is already applied in UpdateSlide (line ~1165)
+        // This adds EXTRA friction to simulate surface drag going uphill
+        // ═══════════════════════════════════════════════════════════════════
+        
+        // Progressive uphill resistance based on speed
         float speedRatio = Mathf.InverseLerp(10f, 80f, speed);
-        float frictionMult = Mathf.Lerp(UphillFrictionMultiplier * 1.5f, UphillFrictionMultiplier, speedRatio);
+        // At low speed: 2.5× friction (strong resistance to help you stop)
+        // At high speed: 2.0× friction (allows some momentum)
+        float frictionMult = Mathf.Lerp(UphillFrictionMultiplier * 1.25f, UphillFrictionMultiplier, speedRatio);
         
         Vector3 frictionForce = -slideVelocity.normalized * (SlideFrictionFlat * frictionMult * dt);
         
+        if (verboseDebugLogging)
+        {
+            Debug.Log($"<color=cyan>[UPHILL FRICTION] Speed: {speed:F1}, Mult: {frictionMult:F2}×, Force: {frictionForce.magnitude:F2}</color>");
+        }
+        
         if (frictionForce.magnitude >= speed)
         {
-            // Don't stop completely - allow slight backward roll
+            // Friction would stop us completely - allow slight backward roll instead
             slideVelocity = -slideVelocity.normalized * 8f;
+            
+            if (verboseDebugLogging)
+            {
+                Debug.Log($"<color=red>[UPHILL FRICTION] Speed too low - reversing direction!</color>");
+            }
         }
         else
         {
             slideVelocity += frictionForce;
         }
         
-        // Smart reversal system
+        // Smart reversal system (only after sustained uphill movement)
         if (startedOnSlope && Time.time - lastSlopeTime > uphillMinTime)
         {
             if (speed < uphillReversalSpeed)
@@ -1840,6 +2073,11 @@ public class CleanAAACrouch : MonoBehaviour
                 float reversalPower = Mathf.Lerp(uphillReversalBoost, uphillReversalBoost * 1.5f, 
                     Mathf.InverseLerp(45f, 60f, Vector3.Angle(Vector3.up, smoothedGroundNormal)));
                 slideVelocity = -slideVelocity.normalized * reversalPower;
+                
+                if (verboseDebugLogging)
+                {
+                    Debug.Log($"<color=magenta>[UPHILL REVERSAL] Speed {speed:F1} < {uphillReversalSpeed:F1} - reversing with power {reversalPower:F1}!</color>");
+                }
             }
         }
     }
@@ -2034,6 +2272,7 @@ public class CleanAAACrouch : MonoBehaviour
         uphillReversalSpeed = config.uphillReversalSpeed;
         uphillMinTime = config.uphillMinTime;
         uphillReversalBoost = config.uphillReversalBoost;
+        uphillRampUpDuration = config.uphillRampUpDuration; // Load uphill ramp duration from config
         slopeTransitionGrace = config.slopeTransitionGrace;
         radiusSkin = config.radiusSkin;
         groundNormalSmoothing = config.groundNormalSmoothing;
@@ -2075,7 +2314,7 @@ public class CleanAAACrouch : MonoBehaviour
         {
             Gizmos.color = Color.blue;
             Vector3 velDir = slideVelocity.normalized * debugArrowLength;
-            Gizmos.DrawRay(pos, velDir);
+            // Gizmos.DrawRay removed for performance
             Gizmos.DrawSphere(pos + velDir, 0.2f);
         }
         
@@ -2083,7 +2322,7 @@ public class CleanAAACrouch : MonoBehaviour
         if (hasSmoothedNormal)
         {
             Gizmos.color = Color.green;
-            Gizmos.DrawRay(pos, smoothedGroundNormal * debugArrowLength * 0.5f);
+            // Gizmos.DrawRay removed for performance
         }
         
         // Draw downhill direction (RED)
@@ -2091,7 +2330,7 @@ public class CleanAAACrouch : MonoBehaviour
         {
             Vector3 downhillDir = Vector3.ProjectOnPlane(Vector3.down, smoothedGroundNormal).normalized;
             Gizmos.color = Color.red;
-            Gizmos.DrawRay(pos, downhillDir * debugArrowLength * 0.7f);
+            // Gizmos.DrawRay removed for performance
             Gizmos.DrawSphere(pos + downhillDir * debugArrowLength * 0.7f, 0.15f);
         }
         
@@ -2181,10 +2420,11 @@ public class CleanAAACrouch : MonoBehaviour
             
             if (!Mathf.Approximately(newH, controller.height))
             {
-                // CRITICAL: Keep center.y CONSTANT so CharacterController doesn't move the GameObject!
-                // Only change the HEIGHT - center stays at standing height / 2
+                // CRITICAL FIX: Adjust center to keep feet planted on ground!
+                // When height changes, center must change to keep bottom of capsule in same place
+                // Formula: center.y = height / 2 (keeps bottom at y=0 in local space)
                 controller.height = newH;
-                // DON'T change center.y at all!
+                controller.center = new Vector3(controller.center.x, newH * 0.5f, controller.center.z);
             }
         }
 
@@ -2194,7 +2434,15 @@ public class CleanAAACrouch : MonoBehaviour
             float stepC = Mathf.Max(0.01f, dynamicCameraLerpSpeed) * Time.deltaTime;
             Vector3 lp = cameraTransform.localPosition;
             float newY = Mathf.MoveTowards(lp.y, targetCameraY, stepC);
-            cameraTransform.localPosition = new Vector3(cameraLocalStart.x, newY, cameraLocalStart.z);
+            Vector3 newPos = new Vector3(cameraLocalStart.x, newY, cameraLocalStart.z);
+            cameraTransform.localPosition = newPos;
+            
+            // CRITICAL: Update AAACameraController's base position so it doesn't override us
+            AAACameraController camController = cameraTransform.GetComponent<AAACameraController>();
+            if (camController != null)
+            {
+                camController.UpdateBaseLocalPosition(newPos);
+            }
         }
     }
 
@@ -2534,16 +2782,10 @@ public class CleanAAACrouch : MonoBehaviour
         // OPTIMIZATION: Early exit if no controller
         if (controller == null) return;
         
-        // CRITICAL FIX: Don't interfere with normal walking - only check if player is crouching or moving fast
-        bool isCrouching = Input.GetKey(Controls.Crouch);
-        bool isMovingFast = movement != null && movement.CurrentSpeed > 100f;
-        
-        if (!isCrouching && !isMovingFast)
-        {
-            // Player is just walking normally - don't interfere!
-            steepSlopeContactStartTime = -999f;
-            return;
-        }
+        // CRITICAL FIX: Remove restrictive guard - auto-slide should work when landing on steep slopes
+        // OLD (BROKEN): Only checked if crouching OR moving fast (>100 speed)
+        // NEW (CORRECT): Always check steep slopes, let contact duration filter out wall touches
+        // The contact duration check (0.15s) is sufficient to prevent false triggers
         
         // OPTIMIZATION: Single raycast downward from player center
         // Uses existing probe system for consistency
@@ -2563,69 +2805,26 @@ public class CleanAAACrouch : MonoBehaviour
         
         // PRISTINE: Only force-slide on STEEP slopes (>50°)
         // Moderate slopes (12-50°) are handled by crouch press in Update()
-        const float STEEP_SLOPE_THRESHOLD = 50f;
+        const float STEEP_SLOPE_THRESHOLD = 55f; // Auto-slide on slopes 55°-90°
         
-        if (angle > STEEP_SLOPE_THRESHOLD)
+        if (angle >= STEEP_SLOPE_THRESHOLD && angle < 90f)
         {
-            // SMART DETECTION: Check if this is sustained contact or just a brief touch
-            // Start tracking contact time
-            if (steepSlopeContactStartTime < 0f)
+            // INSTANT AUTO-SLIDE: No contact duration requirement - trigger immediately
+            // Only start slide if NOT already sliding
+            if (!isSliding)
             {
-                steepSlopeContactStartTime = Time.time;
-            }
-            
-            float contactDuration = Time.time - steepSlopeContactStartTime;
-            
-            // CRITICAL: Only trigger if we've been on the steep slope for minimum duration
-            // This prevents triggering on brief wall touches while allowing real slope slides
-            if (contactDuration >= STEEP_SLOPE_MIN_CONTACT_TIME)
-            {
-                // CRITICAL FIX: Only start slide if NOT already sliding
-                // If already sliding, UpdateSlide() handles the force - don't duplicate!
-                if (!isSliding)
+                // Only auto-slide if moving downward (not when jumping up onto slope)
+                bool isMovingDown = movement != null && movement.Velocity.y <= 0f;
+                
+                if (isMovingDown)
                 {
-                    // PRISTINE: Use single source of truth for velocity check
-                    bool isMovingDown = movement != null && movement.Velocity.y <= 0f;
+                    // Force slide start - simulates pressing crouch button
+                    forceSlideStartThisFrame = true;
+                    TryStartSlide();
                     
-                    if (isMovingDown)
-                    {
-                        // PRISTINE: Request temporary slope limit override for steep slope slide
-                        if (movement != null)
-                        {
-                            bool granted = movement.RequestSlopeLimitOverride(90f, AAAMovementController.ControllerModificationSource.Crouch);
-                            
-                            if (granted)
-                            {
-                                // Force slide start using existing flag system
-                                forceSlideStartThisFrame = true;
-                                TryStartSlide();
-                                
-                                Debug.Log($"[AUTO-SLIDE] STEEP slope auto-slide! Angle: {angle:F1}°, Contact: {contactDuration:F2}s");
-                            }
-                            else
-                            {
-                                Debug.LogWarning($"[AUTO-SLIDE] Slope limit override denied by AAA - cannot start steep slope slide");
-                            }
-                        }
-                    }
-                    else
-                    {
-                        if (verboseDebugLogging)
-                        {
-                            Debug.Log($"[AUTO-SLIDE] On steep slope but moving upward (Y vel: {movement?.Velocity.y:F2}) - skipping auto-slide");
-                        }
-                    }
+                    Debug.Log($"[AUTO-SLIDE] INSTANT steep slope slide! Angle: {angle:F1}°");
                 }
             }
-            else if (verboseDebugLogging)
-            {
-                Debug.Log($"[AUTO-SLIDE] Brief steep slope contact ({contactDuration:F2}s < {STEEP_SLOPE_MIN_CONTACT_TIME}s) - waiting...");
-            }
-        }
-        else
-        {
-            // Not on steep slope - reset contact timer
-            steepSlopeContactStartTime = -999f;
         }
     }
     
@@ -2635,4 +2834,22 @@ public class CleanAAACrouch : MonoBehaviour
     public bool IsDiving => isDiving;
     public bool IsDiveProne => isDiveProne;
     public float CurrentSlideSpeed => isSliding ? slideVelocity.magnitude : 0f;
+    
+    /// <summary>
+    /// PUBLIC API: Queue landing momentum for next slide transition.
+    /// Used by CrouchSlamController to inject boosted speed on slam landing.
+    /// </summary>
+    /// <param name="momentum">3D momentum vector to preserve (can include Y for slope-aligned velocity)</param>
+    /// <param name="duration">How long to keep this momentum queued (seconds)</param>
+    public void QueueLandingMomentum(Vector3 momentum, float duration)
+    {
+        // CRITICAL FIX: Preserve Y component for slope-aligned momentum from crouch slam!
+        // Old code stripped Y → horizontal → no downhill flow on slopes
+        // New code keeps full 3D vector → natural slope physics
+        queuedLandingMomentum = momentum; // Keep full 3D vector (slope-aligned from CrouchSlamController)
+        queuedLandingMomentumUntil = Time.time + duration;
+        
+        if (enableDebugLogs)
+            Debug.Log($"[SLIDE MOMENTUM] Queued landing momentum: {momentum.magnitude:F0} units/s for {duration:F2}s");
+    }
 }
