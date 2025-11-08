@@ -300,7 +300,7 @@ public class AAAMovementController : MonoBehaviour
     [Tooltip("Maximum height of stairs/steps the character can climb. Adjust this for your stair size.")]
     [SerializeField] private float maxStepHeight = 40f; // SCALED for 320-unit character (was 20)
     [Tooltip("Distance to check ahead for stairs.")]
-    [SerializeField] private float stairCheckDistance = 150f; // SCALED for 320-unit character (was 25)
+    [SerializeField] private float stairCheckDistance = 200f; // SCALED for 320-unit character - checks ~2 steps ahead
     [Tooltip("Enable advanced stair detection and climbing assistance.")]
     [SerializeField] private bool enableStairClimbingAssist = true;
     [Tooltip("Smooth step climbing to prevent jarring transitions.")]
@@ -1649,6 +1649,16 @@ public class AAAMovementController : MonoBehaviour
             return;
         }
         
+        // 🔥 CRITICAL FIX: Disable stair detection at high speeds
+        // If you're going 1800+ u/s, you're NOT on stairs - you're on slopes doing momentum runs!
+        // This prevents the stair system from interfering with high-speed movement and causing speed crashes
+        Vector3 currentHorizontalVelocity = new Vector3(velocity.x, 0, velocity.z);
+        if (currentHorizontalVelocity.magnitude > 1800f)
+        {
+            isClimbingStairs = false;
+            return;
+        }
+        
         // Get horizontal movement direction
         Vector3 horizontalDir = new Vector3(moveDirection.x, 0, moveDirection.z).normalized;
         if (horizontalDir.magnitude < 0.1f)
@@ -1748,18 +1758,11 @@ public class AAAMovementController : MonoBehaviour
             }
         }
         
-        // Maintain horizontal speed while climbing (with optional slowdown)
-        Vector3 horizontalVelocity = new Vector3(velocity.x, 0, velocity.z);
-        if (horizontalVelocity.magnitude > 0.1f)
-        {
-            float targetSpeed = MoveSpeed * stairClimbSpeedMultiplier;
-            if (horizontalVelocity.magnitude > targetSpeed)
-            {
-                horizontalVelocity = horizontalVelocity.normalized * targetSpeed;
-                velocity.x = horizontalVelocity.x;
-                velocity.z = horizontalVelocity.z;
-            }
-        }
+        // 🔥 NO SPEED CAP - preserve momentum while climbing stairs
+        // Removing the old speed cap allows grappling/sliding momentum to be maintained on stairs
+        // This prevents the catastrophic speed crashes that were happening when stairs capped speed
+        // Old code: Would cap speed to MoveSpeed * stairClimbSpeedMultiplier (~900 u/s)
+        // New code: Preserves full momentum (can maintain 2000-3000+ u/s through stairs)
         
         Debug.DrawLine(transform.position, topHit.point, Color.blue, 0.1f);
     }
