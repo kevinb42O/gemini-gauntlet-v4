@@ -2282,31 +2282,75 @@ public class AAAMovementController : MonoBehaviour
                                 float forwardDelta = targetForwardVel - currentForwardVel;
                                 float strafeDelta = targetStrafeVel - currentStrafeVel;
                             
-                            // Apply slope momentum if enabled (only affects forward movement)
-                            float effectiveAcceleration = groundAcceleration;
-                            if (enableSlopeMomentum && currentSlopeAngle > minimumSlopeAngle)
+                            // 🔥 UNIFIED SLOPE MOMENTUM - Apply to ANY movement direction (forward + strafe)
+                            // CRITICAL: Uses intended movement direction, not just camera forward
+                            float effectiveForwardAccel = groundAcceleration;
+                            float effectiveStrafeAccel = groundAcceleration;
+                            
+                            if (enableSlopeMomentum && currentSlopeAngle > minimumSlopeAngle && hasInput)
                             {
-                                // Calculate slope factor (-1 = downhill, +1 = uphill)
+                                // Calculate slope direction (downhill = positive direction of gravity on slope)
                                 Vector3 downhillDir = Vector3.ProjectOnPlane(Vector3.down, groundNormal).normalized;
-                                float slopeDirection = Vector3.Dot(forward, downhillDir);
                                 
-                                if (slopeDirection > 0.1f && Mathf.Abs(inputY) > 0.01f)
+                                // CRITICAL FIX: Check the ACTUAL MOVEMENT DIRECTION, not just camera axes!
+                                // Build the intended movement direction from input
+                                Vector3 intendedMoveDir = (forward * inputY + right * inputX).normalized;
+                                
+                                // Check if movement is uphill or downhill
+                                float movementSlopeAlignment = Vector3.Dot(intendedMoveDir, downhillDir);
+                                
+                                float slopeFactor = Mathf.Sin(currentSlopeAngle * Mathf.Deg2Rad);
+                                
+                                if (movementSlopeAlignment > 0.1f)
                                 {
-                                    // Moving downhill - boost acceleration (only forward)
-                                    float slopeFactor = Mathf.Sin(currentSlopeAngle * Mathf.Deg2Rad);
-                                    effectiveAcceleration *= (1f + (slopeAccelerationMultiplier * slopeFactor * slopeDirection));
+                                    // Moving downhill - boost acceleration on BOTH axes proportionally
+                                    float downhillBoost = 1f + (slopeAccelerationMultiplier * slopeFactor * movementSlopeAlignment);
+                                    effectiveForwardAccel *= downhillBoost;
+                                    effectiveStrafeAccel *= downhillBoost;
                                 }
-                                else if (slopeDirection < -0.1f && Mathf.Abs(inputY) > 0.01f)
+                                else if (movementSlopeAlignment < -0.1f)
                                 {
-                                    // Moving uphill - reduce acceleration (only forward)
-                                    float slopeFactor = Mathf.Sin(currentSlopeAngle * Mathf.Deg2Rad);
-                                    effectiveAcceleration /= (1f + (uphillFrictionMultiplier * slopeFactor * Mathf.Abs(slopeDirection)));
+                                    // Moving uphill - apply friction on BOTH axes
+                                    float uphillPenalty = 1f + (uphillFrictionMultiplier * slopeFactor * Mathf.Abs(movementSlopeAlignment));
+                                    effectiveForwardAccel /= uphillPenalty;
+                                    effectiveStrafeAccel /= uphillPenalty;
+                                    
+                                    // Apply uphill friction to BOTH deltas
+                                    float uphillFriction = uphillFrictionMultiplier * slopeFactor * Mathf.Abs(movementSlopeAlignment) * 1200f;
+                                    float frictionDecel = uphillFriction * Time.deltaTime;
+                                    float maxUphillDecel = 600f * Time.deltaTime;
+                                    frictionDecel = Mathf.Min(frictionDecel, maxUphillDecel);
+                                    
+                                    // Apply friction proportionally to each axis based on input magnitude
+                                    if (Mathf.Abs(inputY) > 0.01f)
+                                    {
+                                        float forwardFriction = frictionDecel * Mathf.Abs(inputY);
+                                        forwardDelta -= Mathf.Sign(forwardDelta) * forwardFriction;
+                                        
+                                        // Prevent acceleration uphill when already moving
+                                        if (currentSpeed > MoveSpeed * 0.1f && Mathf.Sign(forwardDelta) == Mathf.Sign(inputY))
+                                        {
+                                            forwardDelta = 0f;
+                                        }
+                                    }
+                                    
+                                    if (Mathf.Abs(inputX) > 0.01f)
+                                    {
+                                        float strafeFriction = frictionDecel * Mathf.Abs(inputX);
+                                        strafeDelta -= Mathf.Sign(strafeDelta) * strafeFriction;
+                                        
+                                        // Prevent acceleration uphill when already moving
+                                        if (currentSpeed > MoveSpeed * 0.1f && Mathf.Sign(strafeDelta) == Mathf.Sign(inputX))
+                                        {
+                                            strafeDelta = 0f;
+                                        }
+                                    }
                                 }
                             }
                             
                             // Frame-rate independent acceleration (separate for forward and strafe)
-                            float maxForwardChange = effectiveAcceleration * Time.deltaTime;
-                            float maxStrafeChange = groundAcceleration * Time.deltaTime; // Strafe uses base acceleration
+                            float maxForwardChange = effectiveForwardAccel * Time.deltaTime;
+                            float maxStrafeChange = effectiveStrafeAccel * Time.deltaTime;
                             
                             // Clamp deltas to max acceleration
                             if (Mathf.Abs(forwardDelta) > maxForwardChange)
