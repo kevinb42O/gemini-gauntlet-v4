@@ -430,6 +430,11 @@ public class AAAMovementController : MonoBehaviour
     private Vector3 groundNormal; // To store the normal of the ground surface
     private float currentSlopeAngle = 0f; // Current slope angle in degrees
     
+    // Slope debug logging (to reduce log spam)
+    private bool _lastSlopeDebugLogged = false;
+    private float _lastLoggedSpeed = 0f;
+    private float _lastLoggedAngle = 0f;
+    
     // Stair climbing state
     private bool isClimbingStairs = false;
     private float stairClimbProgress = 0f;
@@ -2483,48 +2488,122 @@ public class AAAMovementController : MonoBehaviour
                     // SLOPE DESCENT SYSTEM: Apply downward force based on slope angle
                     // MAJOR FIX: Now works on ALL slopes (even 1°!) with proper force scaling
                     // IDLE FIX: Only apply slope descent when player has movement input
-                    // This prevents unwanted sliding on slopes when standing still (which triggers footsteps)
+                    // DIRECTION FIX: Only apply when moving DOWNHILL, not uphill!
                     if (currentSlopeAngle > MinimumSlopeAngle && currentSlopeAngle <= MaxSlopeAngle && hasCurrentMovementInput)
                     {
-                        // Calculate slope descent force - EXPONENTIAL CURVE for gentle slope sensitivity
-                        // Gentle slopes (1-15°) get STRONGER relative force (0.3-0.7)
-                        // Steep slopes (30-50°) get linear scaling (0.8-1.0)
-                        float slopeNormalized;
-                        if (currentSlopeAngle <= 15f)
+                        // 🐛 BUG FIX: Check if player is moving DOWNHILL or UPHILL
+                        // Calculate which direction is downhill on this slope
+                        Vector3 downhillDir = Vector3.ProjectOnPlane(Vector3.down, groundNormal).normalized;
+                        
+                        // Check if player's velocity is aligned with downhill direction
+                        Vector3 currentHorizontalVel = new Vector3(velocity.x, 0, velocity.z);
+                        float movementAlignment = Vector3.Dot(currentHorizontalVel.normalized, downhillDir);
+                        
+                        // Only apply descent force when moving downhill (positive dot product)
+                        // Threshold of 0.2 allows slight diagonal movement while still counting as "downhill"
+                        if (movementAlignment > 0.2f)
                         {
-                            // Gentle slopes: Exponential boost (0.3 baseline + angle-based growth)
-                            slopeNormalized = 0.3f + (currentSlopeAngle / 15f) * 0.4f; // 0.3 → 0.7
+                            // MOVING DOWNHILL - Apply gravity assist
+                            // Calculate slope descent force - EXPONENTIAL CURVE for gentle slope sensitivity
+                            // Gentle slopes (1-15°) get STRONGER relative force (0.3-0.7)
+                            // Steep slopes (30-50°) get linear scaling (0.8-1.0)
+                            float slopeNormalized;
+                            if (currentSlopeAngle <= 15f)
+                            {
+                                // Gentle slopes: Exponential boost (0.3 baseline + angle-based growth)
+                                slopeNormalized = 0.3f + (currentSlopeAngle / 15f) * 0.4f; // 0.3 → 0.7
+                            }
+                            else
+                            {
+                                // Steep slopes: Linear progression (0.7 → 1.0)
+                                slopeNormalized = 0.7f + ((currentSlopeAngle - 15f) / (MaxSlopeAngle - 15f)) * 0.3f;
+                            }
+                            
+                            // CRITICAL: Base force now MUCH STRONGER for 320-unit scale
+                            // Old: MoveSpeed * 0.5 = 450 units/s (too weak!)
+                            // New: MoveSpeed * 3.0 = 2700 units/s base (properly scaled!)
+                            float baseForce = MoveSpeed * 3.0f; // 3x stronger for 320-unit characters
+                            float descentPull = baseForce * slopeNormalized * Time.deltaTime;
+                            
+                            // Apply descent force along the slope surface
+                            velocity += downhillDir * descentPull;
+                            
+                            // ANTI-BOUNCE FIX: MAXIMUM FORCE stick-to-ground prevents slope bouncing at high speed
+                            // SCALED: Must overpower 3000 u/s sprint speed momentum on steep slopes
+                            float minY = Mathf.Lerp(-15f, -50f, slopeNormalized); // Gentle: -15, Steep: -50
+                            velocity.y = Mathf.Clamp(velocity.y, minY, -2000f); // MAXIMUM stick force (66% of sprint speed)
+                            
+                            // 🐛 DEBUG: Only log when speed changes significantly OR slope angle changes significantly
+                            float currentHorizSpeed = currentHorizontalVel.magnitude;
+                            if (!_lastSlopeDebugLogged || 
+                                Mathf.Abs(currentHorizSpeed - _lastLoggedSpeed) > 100f || 
+                                Mathf.Abs(currentSlopeAngle - _lastLoggedAngle) > 2f)
+                            {
+                                Debug.Log($"[⬇️ DESCENT] Angle: {currentSlopeAngle:F1}°, Speed: {currentHorizSpeed:F0} u/s, Align: {movementAlignment:F2}");
+                                _lastLoggedSpeed = currentHorizSpeed;
+                                _lastLoggedAngle = currentSlopeAngle;
+                                _lastSlopeDebugLogged = true;
+                            }
+                        }
+                        else if (movementAlignment < -0.2f)
+                        {
+                            // MOVING UPHILL - Dynamically raise slope limit based on speed
+                            // This prevents CharacterController from blocking movement on steep slopes
+                            float currentHorizSpeed = currentHorizontalVel.magnitude;
+                            
+                            // CRITICAL: Raise slope limit whenever going faster than walking speed
+                            // The faster you go, the steeper slopes you can climb
+                            if (currentHorizSpeed > 1100f)
+                            {
+                                // Fast speeds: Dramatically raise slope limit
+                                // At 1100 u/s: slopeLimit = 60°
+                                // At 2000+ u/s: slopeLimit = 89° (almost vertical!)
+                                float speedRatio = Mathf.Clamp01((currentHorizSpeed - 1100f) / 900f); // 0 at 1100, 1 at 2000
+                                float tempSlopeLimit = Mathf.Lerp(60f, 89f, speedRatio);
+                                controller.slopeLimit = tempSlopeLimit;
+                            }
+                            else
+                            {
+                                // Walking speeds: Normal slope limit + light stick force
+                                controller.slopeLimit = MaxSlopeAngle;
+                                velocity.y = Mathf.Clamp(velocity.y, -100f, 2f);
+                            }
+                            
+                            // 🐛 DEBUG: Only log when speed changes significantly OR slope angle changes significantly
+                            if (!_lastSlopeDebugLogged || 
+                                Mathf.Abs(currentHorizSpeed - _lastLoggedSpeed) > 100f || 
+                                Mathf.Abs(currentSlopeAngle - _lastLoggedAngle) > 2f)
+                            {
+                                Debug.Log($"[⬆️ ASCENT] Angle: {currentSlopeAngle:F1}°, Speed: {currentHorizSpeed:F0} u/s, Align: {movementAlignment:F2}");
+                                _lastLoggedSpeed = currentHorizSpeed;
+                                _lastLoggedAngle = currentSlopeAngle;
+                                _lastSlopeDebugLogged = true;
+                            }
                         }
                         else
                         {
-                            // Steep slopes: Linear progression (0.7 → 1.0)
-                            slopeNormalized = 0.7f + ((currentSlopeAngle - 15f) / (MaxSlopeAngle - 15f)) * 0.3f;
-                        }
-                        
-                        // CRITICAL: Base force now MUCH STRONGER for 320-unit scale
-                        // Old: MoveSpeed * 0.5 = 450 units/s (too weak!)
-                        // New: MoveSpeed * 3.0 = 2700 units/s base (properly scaled!)
-                        float baseForce = MoveSpeed * 3.0f; // 3x stronger for 320-unit characters
-                        float descentPull = baseForce * slopeNormalized * Time.deltaTime;
-                        
-                        // Apply descent force along the slope surface
-                        Vector3 slopeDirection = Vector3.ProjectOnPlane(Vector3.down, groundNormal).normalized;
-                        velocity += slopeDirection * descentPull;
-                        
-                        // ANTI-BOUNCE FIX: MAXIMUM FORCE stick-to-ground prevents slope bouncing at high speed
-                        // SCALED: Must overpower 3000 u/s sprint speed momentum on steep slopes
-                        float minY = Mathf.Lerp(-15f, -50f, slopeNormalized); // Gentle: -15, Steep: -50
-                        velocity.y = Mathf.Clamp(velocity.y, minY, -2000f); // MAXIMUM stick force (66% of sprint speed)
-                        
-                        if (showGroundingDebug && Time.frameCount % 30 == 0)
-                        {
-                            Debug.Log($"[SLOPE DESCENT] Angle: {currentSlopeAngle:F1}°, Force: {descentPull * 60:F0} u/s, Normalized: {slopeNormalized:F2}, Y-vel: {velocity.y:F1}");
+                            // MOVING PERPENDICULAR (strafing across slope) - Moderate stick force
+                            controller.slopeLimit = MaxSlopeAngle; // Restore normal slope limit
+                            velocity.y = Mathf.Clamp(velocity.y, -1000f, 2f); // Medium force for sideways movement
+                            
+                            // 🐛 DEBUG: Only log when speed changes significantly OR slope angle changes significantly
+                            float currentHorizSpeed = currentHorizontalVel.magnitude;
+                            if (!_lastSlopeDebugLogged || 
+                                Mathf.Abs(currentHorizSpeed - _lastLoggedSpeed) > 100f || 
+                                Mathf.Abs(currentSlopeAngle - _lastLoggedAngle) > 2f)
+                            {
+                                Debug.Log($"[↔️ TRAVERSE] Angle: {currentSlopeAngle:F1}°, Speed: {currentHorizSpeed:F0} u/s, Align: {movementAlignment:F2}");
+                                _lastLoggedSpeed = currentHorizSpeed;
+                                _lastLoggedAngle = currentSlopeAngle;
+                                _lastSlopeDebugLogged = true;
+                            }
                         }
                     }
                     else
                     {
                         // ANTI-BOUNCE FIX: Flat ground MAXIMUM FORCE stick
                         // Also applied when on slope but NOT moving (prevents idle slide)
+                        controller.slopeLimit = MaxSlopeAngle; // Restore normal slope limit
                         velocity.y = Mathf.Clamp(velocity.y, -2000f, 2f); // MAXIMUM stick force (66% of sprint speed)
                         
                         // DEBUG: Log when stick force is applied on flat ground
